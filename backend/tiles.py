@@ -391,11 +391,11 @@ def _tree_size(root: Path) -> int:
 def _prune_tree(root: Path, target_bytes: int, keep_version: str | None) -> int:
     """Delete other releases first, then least-recently-used files, until we fit. Returns bytes left."""
     for child in root.iterdir():
-        if child.is_dir() and child.name != keep_version:
+        if child.is_dir() and child.name not in (keep_version, "timelapse"):
             shutil.rmtree(child, ignore_errors=True)
     files = []
     for e in _walk_files(root):
-        if e.name == "survey.json":
+        if e.name == "survey.json" or e.name.startswith("wavelengths_"):
             continue
         st = e.stat()
         files.append((max(st.st_atime, st.st_mtime), st.st_size, e.path))

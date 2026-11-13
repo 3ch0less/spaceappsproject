@@ -41,21 +41,84 @@
     <button class="link" id="welcome-close">Just let me explore</button>
   </section>
 
-  <!-- Info about the current target -->
-  <aside id="info" class="card info" hidden>
-    <button class="close" id="info-close" aria-label="Close">×</button>
-    <span id="info-kind" class="badge"></span>
-    <h2 id="info-name"></h2>
-    <p id="info-type" class="muted"></p>
-    <p id="info-blurb" class="blurb"></p>
-    <dl id="info-facts" class="facts"></dl>
-    <div class="actions">
-      <button id="act-zoom" class="btn">Zoom in closer</button>
-      <button id="act-share" class="btn ghost">Copy link</button>
+  <!-- Inspector: everything about the selected object, including its time-lapse -->
+  <aside id="info" class="inspector" aria-label="Selected object" hidden>
+    <div class="insp-scroll">
+      <header class="insp-head">
+        <button class="close" id="info-close" aria-label="Close">×</button>
+        <span id="info-kind" class="badge"></span>
+        <h2 id="info-name"></h2>
+        <p id="info-type" class="muted"></p>
+        <p id="info-blurb" class="blurb"></p>
+        <dl id="info-facts" class="facts"></dl>
+        <div class="actions">
+          <button id="act-zoom" class="btn">Zoom in closer</button>
+          <button id="act-share" class="btn ghost">Copy link</button>
+        </div>
+      </header>
+
+      <!-- Time-lapse: one image per SPHEREx visit, played like a flipbook -->
+      <section id="tl" class="insp-sec" aria-label="Time-lapse" hidden>
+        <div class="sec-head">
+          <h3>Time-lapse</h3>
+          <span id="tl-sub" class="muted"></span>
+        </div>
+        <div id="tl-stage" class="tl-stage" tabindex="0" aria-label="Time-lapse image. Arrow keys step through visits, space plays or pauses.">
+          <canvas id="tl-canvas"></canvas>
+          <div id="tl-hud" class="tl-hud" hidden></div>
+          <div id="tl-status" class="tl-status" role="status" hidden>
+            <p id="tl-status-text"></p>
+            <div class="tl-progress"><div id="tl-bar"></div></div>
+            <button id="tl-retry" class="btn" type="button" hidden>Load time-lapse</button>
+          </div>
+        </div>
+        <div class="tl-transport">
+          <button id="tl-prev" class="tl-btn" type="button" aria-label="Previous visit" title="Previous visit">‹</button>
+          <button id="tl-play" class="tl-btn play" type="button" aria-label="Play">▶</button>
+          <button id="tl-next" class="tl-btn" type="button" aria-label="Next visit" title="Next visit">›</button>
+          <div id="tl-track" class="tl-track"></div>
+        </div>
+        <div id="tl-dets" class="tl-dets" role="group" aria-label="SPHEREx detector (infrared colour band)"></div>
+        <div class="tl-opts">
+          <div class="seg" id="tl-mode" role="group" aria-label="What to show">
+            <button type="button" data-mode="blink" class="on" title="Show each visit in turn">Blink</button>
+            <button type="button" data-mode="diff" title="Subtract the first visit: only what changed remains">Difference</button>
+          </div>
+          <select id="tl-fov" aria-label="Width of the patch"></select>
+          <select id="tl-speed" aria-label="Playback speed">
+            <option value="1100">Slow</option>
+            <option value="650" selected>Normal</option>
+            <option value="320">Fast</option>
+          </select>
+        </div>
+        <div class="tl-opts">
+          <label class="toggle" title="Marks where the catalog says the object should be on each date"><input type="checkbox" id="tl-marker" checked> Marker</label>
+          <label class="toggle"><input type="checkbox" id="tl-gaia"> Gaia stars</label>
+          <label class="tl-bright">Brightness <input type="range" id="tl-bright" min="0" max="100" value="50" aria-label="Image brightness"></label>
+        </div>
+        <p id="tl-note" class="sec-note"></p>
+      </section>
+
+      <!-- Spectrum: brightness at this spot in every exposure -->
+      <section id="spec" class="insp-sec" aria-label="Spectrum" hidden>
+        <div class="sec-head">
+          <h3>Spectrum</h3>
+          <span class="muted">brightness in each infrared colour</span>
+        </div>
+        <p id="spec-headline" class="spec-headline"></p>
+        <div class="spec-wrap">
+          <div id="spec-chart"></div>
+          <div id="spec-tip" class="spec-tip" hidden></div>
+        </div>
+        <div id="spec-legend" class="spec-legend"></div>
+        <p id="spec-note" class="sec-note"></p>
+        <button id="spec-all" class="btn wide" type="button" hidden>Load the other detectors</button>
+        <details class="spec-details">
+          <summary>Show the numbers</summary>
+          <div id="spec-table" class="spec-table"></div>
+        </details>
+      </section>
     </div>
-    <button id="act-blink" class="btn wide" disabled title="Coming next: SPHEREx images of this spot from different dates, played like a flipbook">
-      ▶ Time-lapse: see it move <span class="soon">coming next</span>
-    </button>
   </aside>
 
   <!-- Controls -->
