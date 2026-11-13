@@ -1,7 +1,9 @@
 """SkyShift backend.
 
-Serves the frontend and a small JSON API:
+Serves the frontend, the sky tiles and a small JSON API:
   GET /api/resolve?q=<anything>   -> where is it on the sky + what is it
+  GET /api/survey                 -> wavelengths, tile URL and release of the SPHEREx map
+  GET /hips/<version>/<frame>/... -> the sky tiles themselves, cached on disk (see tiles.py)
 
 Resolution order:
   1. Coordinates ("269.45 4.69", "17:57:48.5 +04:41:36", "08h55m10.8s -07d14m42s")
@@ -14,11 +16,14 @@ Run:  uvicorn main:app --reload --port 8000   (from the backend/ folder)
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import math
 import re
 import time
+from collections import OrderedDict
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -30,6 +35,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+import tiles
+
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 # Sesame mirrors, tried in order (the main CDS URL redirects to a mirror that is sometimes slow).
@@ -39,10 +46,19 @@ SESAME_MIRRORS = [
 ]
 HORIZONS_URL = "https://ssd.jpl.nasa.gov/api/horizons.api"
 
-# Time span covered by the SPHEREx DR1 all-sky HiPS (t_min/t_max in its properties file).
-SPHEREX_START = "2025-05-01"
-SPHEREX_END = "2026-05-21"
-SPHEREX_MID_YEAR = 2025.9  # middle of that span, used to move fast stars to where SPHEREx saw them
+# Time span covered by the SPHEREx all-sky HiPS. These are only the fallback: the real values
+# are read from the survey's properties file (t_min/t_max), so a new release updates them.
+SPHEREX_START = "2025-04-24"
+SPHEREX_END = "2026-05-14"
+SPHEREX_MID_YEAR = 2025.84  # middle of that span, used to move fast stars to where SPHEREx saw them
+
+
+def survey_span() -> tuple[str, str, float]:
+    s = tiles.store._survey
+    dates = s.date_range() if s else None
+    if not dates:
+        return SPHEREX_START, SPHEREX_END, SPHEREX_MID_YEAR
+    return dates[0], dates[1], round(s.mid_year(), 2)
 
 MAJOR_BODIES = {
     "sun": ("10", "Sun"),
@@ -94,27 +110,55 @@ OTYPE_LABELS = {
     "X": "X-ray source",
 }
 
-app = FastAPI(title="SkyShift API")
+http: httpx.AsyncClient  # one shared connection pool for the name resolvers (SIMBAD, Horizons)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    global http
+    http = httpx.AsyncClient(timeout=25, headers={"User-Agent": "SkyShift/1.0"})
+    await tiles.store.start()
+    try:
+        yield
+    finally:
+        await tiles.store.stop()
+        await http.aclose()
+
+
+app = FastAPI(title="SkyShift API", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], allow_headers=["*"])
+app.include_router(tiles.router)
 
 
-@app.middleware("http")
-async def no_stale_frontend(request, call_next):
-    # We change the frontend constantly during the hackathon: make browsers always re-check it.
-    response = await call_next(request)
-    if not request.url.path.startswith("/api/"):
-        response.headers["Cache-Control"] = "no-cache"
-    return response
+class ResolveCache:
+    """Small in-memory cache for /api/resolve. Things that move (planets, asteroids) are kept
+    for 10 minutes, fixed stars and galaxies for a day, failed lookups for a minute."""
 
-_cache: dict[str, tuple[float, dict]] = {}
-CACHE_SECONDS = 600
+    MOVING, FIXED, NOT_FOUND, MAX_ITEMS = 600, 86400, 60, 2000
+
+    def __init__(self) -> None:
+        self._items: OrderedDict[str, tuple[float, dict | None]] = OrderedDict()
+        self._pending: dict[str, asyncio.Task] = {}
+
+    def get(self, key: str):
+        hit = self._items.get(key)
+        if hit is None:
+            return None
+        if time.time() > hit[0]:
+            del self._items[key]
+            return None
+        self._items.move_to_end(key)
+        return hit
+
+    def put(self, key: str, result: dict | None) -> None:
+        ttl = self.NOT_FOUND if result is None else self.MOVING if result.get("moving") else self.FIXED
+        self._items[key] = (time.time() + ttl, result)
+        self._items.move_to_end(key)
+        while len(self._items) > self.MAX_ITEMS:
+            self._items.popitem(last=False)
 
 
-def _cached(key: str):
-    hit = _cache.get(key)
-    if hit and time.time() - hit[0] < CACHE_SECONDS:
-        return hit[1]
-    return None
+_cache = ResolveCache()
 
 
 # ---------------------------------------------------------------- coordinates
@@ -180,13 +224,14 @@ async def sesame(client: httpx.AsyncClient, name: str) -> dict | None:
 
     # SIMBAD positions are for the year 2000. Fast stars have moved since then, so also
     # give where it should be in the SPHEREx images (mid-point of the survey).
+    mid_year = survey_span()[2]
     if out.get("pm_total_arcsec_yr", 0) > 0.05:
-        dt = SPHEREX_MID_YEAR - 2000.0
+        dt = mid_year - 2000.0
         cosd = max(1e-6, math.cos(math.radians(out["dec"])))
         out["catalog_ra"], out["catalog_dec"], out["catalog_epoch"] = out["ra"], out["dec"], 2000.0
         out["ra"] = (out["ra"] + out["pm_ra_mas_yr"] * dt / 3.6e6 / cosd) % 360
         out["dec"] = out["dec"] + out["pm_dec_mas_yr"] * dt / 3.6e6
-        out["epoch"] = SPHEREX_MID_YEAR
+        out["epoch"] = mid_year
         out["moved_arcsec_since_catalog"] = round(out["pm_total_arcsec_yr"] * dt, 1)
     out["source"] = "CDS Sesame / SIMBAD"
     return out
@@ -251,17 +296,26 @@ def pick_from_matches(listing: str) -> str | None:
 async def solar_system(client: httpx.AsyncClient, command: str, kind: str, label: str) -> dict | None:
     now = datetime.now(timezone.utc)
     today, tomorrow = now.strftime("%Y-%m-%d %H:%M"), (now + timedelta(days=1)).strftime("%Y-%m-%d %H:%M")
-    points_now, name = await horizons_positions(client, command, today, tomorrow, "1d")
+    start, end, _ = survey_span()
+
+    async def both(cmd: str):
+        # Position today and the path during the survey, asked for at the same time.
+        (points, found_name), (track, _) = await asyncio.gather(
+            horizons_positions(client, cmd, today, tomorrow, "1d"),
+            horizons_positions(client, cmd, start, end, "4d"),
+        )
+        return points, found_name, track
+
+    points_now, name, path = await both(command)
     if not points_now and (retry := pick_from_matches(name)):
         command = retry
-        points_now, name = await horizons_positions(client, command, today, tomorrow, "1d")
+        points_now, name, path = await both(command)
     if not points_now:
         return None
     if name.startswith("DES=") or name.endswith(";"):
         name = name.removeprefix("DES=").split(";")[0]
     if command.startswith("DES=") or "(" in name and "/" in name:
         label = "Comet"
-    path, _ = await horizons_positions(client, command, SPHEREX_START, SPHEREX_END, "4d")
     return {
         "name": name,
         "ra": points_now[0]["ra"],
@@ -271,46 +325,58 @@ async def solar_system(client: httpx.AsyncClient, command: str, kind: str, label
         "moving": True,
         "position_date": points_now[0]["date"],
         "path": path or [],
-        "path_label": f"Its path across the sky while SPHEREx was mapping ({SPHEREX_START} to {SPHEREX_END})",
+        "path_label": f"Its path across the sky while SPHEREx was mapping ({start} to {end})",
         "source": "NASA JPL Horizons",
     }
 
 
 # ---------------------------------------------------------------- API
 
-@app.get("/api/resolve")
-async def resolve(q: str = Query(..., min_length=1, max_length=120)):
-    key = q.strip().lower()
-    if (hit := _cached(key)) is not None:
-        return hit
-
+async def lookup(q: str) -> dict | None:
     coord = parse_coordinates(q)
     if coord is not None:
-        result = {
-            "name": q.strip(),
+        return {
+            "name": q,
             "ra": coord.ra.deg,
             "dec": coord.dec.deg,
             "kind": "coordinates",
             "type_label": "Sky position",
             "source": "coordinates",
         }
-        _cache[key] = (time.time(), result)
-        return result
+    key = q.lower()
+    result = None
+    if key in MAJOR_BODIES:
+        cmd, label = MAJOR_BODIES[key]
+        result = await solar_system(http, cmd, "planet", "Planet" if key not in ("sun", "moon", "pluto") else label)
+    if result is None:
+        result = await sesame(http, q)
+    if result is None:
+        # Asteroid / comet: trailing ';' tells Horizons to search small bodies.
+        result = await solar_system(http, f"{q};", "small-body", "Asteroid")
+    return result
 
-    async with httpx.AsyncClient(timeout=25) as client:
-        result = None
-        if key in MAJOR_BODIES:
-            cmd, label = MAJOR_BODIES[key]
-            result = await solar_system(client, cmd, "planet", "Planet" if key not in ("sun", "moon", "pluto") else label)
-        if result is None:
-            result = await sesame(client, q.strip())
-        if result is None:
-            # Asteroid / comet: trailing ';' tells Horizons to search small bodies.
-            result = await solar_system(client, f"{q.strip()};", "small-body", "Asteroid")
 
+@app.get("/api/resolve")
+async def resolve(q: str = Query(..., min_length=1, max_length=120)):
+    q = q.strip()
+    key = q.lower()
+    hit = _cache.get(key)
+    if hit is None:
+        # Two people (or a double click) asking for the same thing share one lookup.
+        task = _cache._pending.get(key)
+        if task is None:
+            task = asyncio.create_task(lookup(q))
+            _cache._pending[key] = task
+            task.add_done_callback(lambda t: (_cache._pending.pop(key, None), t.cancelled() or t.exception()))
+        try:
+            result = await asyncio.shield(task)
+        except httpx.HTTPError as e:
+            raise HTTPException(502, "The catalog services (SIMBAD / JPL Horizons) did not answer. Try again in a moment.") from e
+        _cache.put(key, result)
+    else:
+        result = hit[1]
     if result is None:
         raise HTTPException(404, f"Couldn't find \"{q}\". Try a star name, planet, asteroid, or coordinates.")
-    _cache[key] = (time.time(), result)
     return result
 
 
@@ -319,5 +385,14 @@ def health():
     return {"ok": True}
 
 
-# Frontend (mounted last so /api routes win).
-app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+class Frontend(StaticFiles):
+    # We change the frontend constantly during the hackathon: browsers must re-check it
+    # (cheap: an unchanged file is answered with "304 Not Modified").
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+# Frontend (mounted last so /api and /hips routes win).
+app.mount("/", Frontend(directory=FRONTEND_DIR, html=True), name="frontend")
