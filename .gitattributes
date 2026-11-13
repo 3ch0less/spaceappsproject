@@ -1,0 +1,7 @@
+# Never line-ending-convert data files
+*.fits binary
+*.fits.gz binary
+*.gz binary
+*.png binary
+*.jpg binary
+*.pdf binary
