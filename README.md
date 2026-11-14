@@ -1,18 +1,24 @@
-# Lumasphere: the infrared sky from NASA's SPHEREx
+# Lumasphere
 
-NASA Space Apps Challenge 2026, challenge **"Planet X and SPHEREx"**.
+**The whole sky in infrared, from NASA's SPHEREx.** Built for the NASA Space Apps Challenge 2026,
+challenge *"Planet X and SPHEREx"*.
 
-Two things in one page:
+Stand inside SPHEREx's all-sky map and look around in any of its 102 infrared colors. Pick any star, planet,
+asteroid or galaxy, or click any spot, and watch how that patch of sky changed from one SPHEREx visit to the next.
 
-1. **The whole sky.** You stand inside the sky (a "reverse panorama") and look around NASA SPHEREx's all-sky infrared
-   map, in any of its 102 infrared colors. Search for any star, planet, asteroid, comet or galaxy and the view flies there.
-2. **The time-lapse (the challenge requirement).** Pick any object or click any spot, and a side panel plays how that
-   patch of sky looked on each of SPHEREx's visits, like a flipbook. Things that moved or changed brightness jump out.
-   Below it, a spectrum shows the object's brightness in every infrared color, one line per visit.
+## Features
+
+- **All-sky map** in 102 infrared colors (0.75–5 µm), with object names and Gaia stars that appear as you zoom
+- **Search** for stars, galaxies, planets, asteroids, comets or coordinates (`05h35m -05d23m`, `RA 83.8 Dec -5.4`)
+- **Time-lapse:** a flipbook of every SPHEREx visit to a patch, with Blink and Difference modes, so moving and
+  changing objects jump out
+- **Spectrum:** brightness in every infrared color, one line per visit, zoomable, with a "did it change?" headline
+- **WISE 2010:** the same patch as NASA's WISE telescope saw it about 16 years earlier
+- **Asteroids:** known asteroids drawn on the map, and **Follow it** tracks one through every SPHEREx exposure
 
 ## Run it
 
-You need **Python 3.12 or newer** and **Git**. Paste one line, then open **http://localhost:8000**.
+You need **Python 3.12+** and **Git**. Paste one line, then open **http://localhost:8000**.
 
 **macOS / Linux**
 ```bash
@@ -24,234 +30,74 @@ git clone https://github.com/3ch0less/spaceappsproject && cd spaceappsproject/ba
 git clone https://github.com/3ch0less/spaceappsproject; cd spaceappsproject\backend; py -m venv .venv; .venv\Scripts\pip install -r requirements.txt; .venv\Scripts\uvicorn main:app --port 8000
 ```
 
-**Docker (any OS)**
+**Docker**
 ```bash
 git clone https://github.com/3ch0less/spaceappsproject && cd spaceappsproject && docker build -t lumasphere . && docker run -p 8000:8000 lumasphere
 ```
 
-Next time, start it again from `spaceappsproject/backend` with `.venv/bin/uvicorn main:app --port 8000`
-(Windows: `.venv\Scripts\uvicorn main:app --port 8000`). Stop it with Ctrl+C.
+<details>
+<summary><b>Didn't work? Step by step</b></summary>
 
-### If the one-liner doesn't work: step by step
+1. Check `python3 --version` (Windows: `py --version`) says **3.12 or newer**. If not, install it from
+   [python.org](https://www.python.org/downloads/). On Windows, tick **"Add python.exe to PATH"**.
+2. `git clone https://github.com/3ch0less/spaceappsproject` (or **Code → Download ZIP**)
+3. `cd spaceappsproject/backend`
+4. `python3 -m venv .venv` (Windows: `py -m venv .venv`)
+5. `source .venv/bin/activate` (Windows: `.venv\Scripts\Activate.ps1`)
+6. `pip install -r requirements.txt`
+7. `uvicorn main:app --port 8000`, then open http://localhost:8000
 
-1. **Check Python and Git.** `python3 --version` (Windows: `py --version`) should say 3.12 or newer, and
-   `git --version` should print a version. If not, install Python from https://www.python.org/downloads/
-   (on Windows, tick **"Add python.exe to PATH"**) and Git from https://git-scm.com/downloads, then open a new terminal.
-2. **Get the code.** `git clone https://github.com/3ch0less/spaceappsproject`, or on GitHub use
-   **Code → Download ZIP** and unzip it.
-3. **Go into the backend folder.** `cd spaceappsproject/backend`
-4. **Make a virtual environment.** `python3 -m venv .venv` (Windows: `py -m venv .venv`)
-5. **Activate it.** `source .venv/bin/activate` (Windows PowerShell: `.venv\Scripts\Activate.ps1`;
-   Command Prompt: `.venv\Scripts\activate.bat`). Your prompt now starts with `(.venv)`.
-6. **Install the libraries.** `pip install -r requirements.txt`
-7. **Start it.** `uvicorn main:app --port 8000`, wait for `Application startup complete`, then open
-   http://localhost:8000.
+**Common problems**
+- *PowerShell won't run scripts:* `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, then retry.
+- *numpy/astropy won't install:* use Python 3.12+ and run `python -m pip install --upgrade pip` first.
+- *Port 8000 is busy:* use `--port 8001` and open http://localhost:8001.
+- *Sky stays black or search fails:* the app needs internet access, because it streams live NASA data.
 
-Common problems:
-- **`python3`/`py` not found:** Python isn't installed or isn't on PATH (step 1). On Windows try `python` instead of `py`.
-- **PowerShell says running scripts is disabled** (step 5): run
-  `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, answer `Y`, and try again. Or skip activating and use
-  `.venv\Scripts\pip` and `.venv\Scripts\uvicorn` directly.
-- **`pip install` fails building numpy or astropy:** your Python is older than 3.12 (or brand new and not yet supported). Use
-  Python 3.12, and run `python -m pip install --upgrade pip` first.
-- **"Address already in use" / port 8000 busy:** start on another port, `uvicorn main:app --port 8001`, and open
-  http://localhost:8001.
-- **The page opens but the sky stays black or searches fail:** the site needs internet access; it loads live data
-  from NASA IRSA, SIMBAD and JPL. The first view of each patch is slow; after that it is cached.
+</details>
 
-Open http://localhost:8000. The backend also serves the frontend and the sky tiles.
+The first view of each patch of sky downloads from NASA and is slow. After that it's cached and opens instantly.
+Before a demo, run `python prebuild.py` in `backend/` (while the server runs) to pre-load the featured targets.
 
-The first time you look at a patch of sky its tiles are downloaded from IRSA (slow: roughly 250 kB/s per
-connection). After that they are served from `backend/.cache/` in a few milliseconds, and the browser keeps
-them too. A time-lapse takes about 8 seconds the first time and is instant afterwards.
-**Before a demo, click through the targets you plan to show once** so everything is already cached.
+## Deploy
 
-## Deploy it
+One container serves everything. It listens on `$PORT` and has a health check at `/api/health`.
 
-Everything (API, sky-tile proxy, frontend) is one container:
+- **Render:** New → Blueprint → this repo (uses `render.yaml`)
+- **Fly.io, Railway, Cloud Run or any Docker host:** deploy the `Dockerfile`
 
-```bash
-docker build -t lumasphere .
-docker run -p 8000:8000 -v lumasphere-cache:/data lumasphere
-```
-
-- **Render:** New → Blueprint → this repo (uses `render.yaml` at the repo root). **Fly.io / Railway /
-  Cloud Run / any Docker host:** point it at the `Dockerfile`; it listens on `$PORT` (default 8000).
-- Health check: `GET /api/health`.
-- Mount a volume at `/data` to keep the cache across restarts; without one it starts empty and fills as
-  people look around (first views of a patch are slower). Size it with `LUMASPHERE_CACHE_GB` (default 5).
-- Runs one worker on purpose (the caches live in the process). Give it ~1 GB RAM; time-lapses are
-  numpy-heavy. Outbound internet is required (IRSA, SIMBAD, JPL, Gaia, IMCCE).
-- After deploying, warm the demo targets: `SERVER=https://your-app.example python backend/prebuild.py`.
-
-## Using the time-lapse
-
-- **Open it:** search for something, pick a target from the list, or click anywhere on the map. Clicking does not move the
-  camera; dragging does not select.
-- **Flipbook:** plays by itself. Each frame is one SPHEREx visit (about six months apart), with its date, visit number
-  and exposure count. The arrow keys step, space plays and pauses. North is up, east is left.
-- **Timeline:** the whole survey left to right, one tick per exposure, one band per visit. Click a band to jump to it.
-- **Detectors D1 to D6:** SPHEREx has six detectors, each covering a slice of the infrared. One loads at first; click
-  another to load it. Cold brown dwarfs start on D6 (4.4–5.0 µm), everything else on D2 (1.1–1.6 µm).
-- **Blink / Difference:** Difference subtracts another visit. Grey means unchanged, a white dot next to a black dot is
-  something that moved, a lone dot brightened or faded.
-- **Options:** patch width (3′, 6′, 12′, 20′), speed, brightness, a marker showing where the catalog predicts the
-  object on each date, and Gaia stars drawn at their positions for that date.
-- **WISE, 2010:** a fold-away panel under the flipbook showing the same patch as NASA's WISE telescope saw it about
-  16 years earlier, at the same size and orientation. Bands W1 and W2 (3.4 and 4.6 µm) are colors SPHEREx sees too;
-  W3 and W4 (12 and 22 µm) show cool dust. It follows the patch width, color style, brightness, marker and Gaia
-  switches above, and the marker shows where a fast star was in 2010.
-- **Spectrum:** brightness against wavelength, one line per visit, with a headline saying whether it changed.
-  "Load the other detectors" fills in the full 0.75–5 µm range. "Show the numbers" gives the same data as a table.
-- **Planets and asteroids** move across the sky, so a fixed patch does not follow them. The panel says so and waits
-  for you to press the button.
-
-What to expect from the challenge's test targets:
-
-| Target | What you see |
-|---|---|
-| Barnard's Star | Moves about 8″ north across three visits. No spectrum: it is so bright it saturates the detector, and the panel says so |
-| RW Aurigae | Brightness changes between visits (245 → 336 → 346 mJy in one band; up to 97% at the longest wavelengths) |
-| R Draconis | Three visits load, but it is too bright to measure: it saturates detectors 2 and 6 (the other four are untested), so no spectrum yet |
-| WISE 0855 | The field loads. The brown dwarf itself is extremely faint and we have not confirmed it is visible |
-| Epsilon Indi B | Resolves and loads; its frames have not been studied closely yet |
+Give it about 1 GB of RAM, and mount a volume at `/data` to keep the cache across restarts.
 
 ## How it works
 
 ```
-frontend/ (plain HTML/CSS/JS, no build step)
-  index.html    layout, and the icons (Lucide, inlined as SVG symbols)
-  style.css     look & feel, including the phone layout (colours and sizes are the variables at the top)
-  fonts/        Archivo, the one typeface, served from here so nothing depends on a font CDN
-  app.js        sky viewer (Aladin Lite v3), search, map clicks, wavelength slider, shareable URLs
-  names.js      object names on the map: more of them the closer you zoom, never overlapping
-  stars.js      Gaia stars on the map, on the same zoom grid: the brightest first, never crowded
-  timelapse.js  the flipbook, its timeline, the WISE comparison and the spectrum chart in the side panel
-
-backend/ (Python FastAPI)
-  main.py       GET /api/resolve?q=...            name or coords → sky position + facts
-                GET /api/identify?ra=&dec=        what is at this spot (a click on the map)
-                GET /api/names/<level>/<band>/<cell>   best-known named objects in one cell of the name grid ("Names" switch)
-                GET /api/stars/<level>/<band>/<cell>   brightest Gaia DR3 stars in one cell of the same grid ("Gaia stars" switch)
-                GET /api/gaia?ra=&dec=&radius=    Gaia DR3 stars around a position (the time-lapse's "Gaia stars" switch)
-  tiles.py      GET /hips/<version>/<frame>/...   sky tiles, one HiPS per wavelength, cached on disk
-                GET /api/survey                   wavelengths, blank frames, release version
-                GET /api/warm                     "these tiles are needed soon" (look-ahead)
-                GET /api/cache                    cache statistics
-  timelapse.py  GET /api/timelapse?ra=&dec=&fov=&det=   one image per visit + brightness per exposure
-                (saturated stars: the glow 15-30" out is measured instead, as "halo")
-  wise.py       GET /api/wise?ra=&dec=&fov=&band=       the same patch as WISE saw it in 2010
-  track.py      GET /api/track?q=Vesta&fov=12     "Follow it": an asteroid/comet through every exposure that
-                caught it, each frame centred on its JPL Horizons position at that moment (~30-60 s fresh)
-  prebuild.py   python prebuild.py  (server running)  builds the demo targets' time-lapses (all 6 detectors)
-                and the Vesta / Ceres / Psyche "Follow it" views ahead of time so they open instantly; kept
-                7 days. A fresh time-lapse is ~3-5 s finding exposures at IRSA + ~4-10 s downloading
-                ~40-50 MB (bandwidth-bound) per detector.
-  main.py       GET /api/suggest?q=               names as you type: SIMBAD named objects + asteroids/comets
-                (map clicks check a local list of the ~5,600 fastest-moving stars, backend/.cache/fast_stars.csv,
-                 refreshed monthly from SIMBAD, instead of asking Gaia every time)
-  asteroids.py  GET /api/asteroids?ra=&dec=&radius=&date=  known asteroids/comets there at that moment ("Asteroids" switch)
-                GET /api/asteroid-suggest?q=      asteroid / comet names for the search box
-                (+ size, orbit family, hazard flag from JPL's Small-Body Database for asteroid searches;
-                 search "asteroid:<name>" to skip the star catalogs)
+frontend/   plain HTML, CSS and JavaScript (no build step). Aladin Lite draws the sky
+backend/    Python + FastAPI: search, sky-tile proxy, time-lapses, spectra, WISE, asteroids
 ```
 
-| Piece | Source |
+| Data | Source |
 |---|---|
-| Sky map | IRSA's SPHEREx DR1 all-sky HiPS cube (102 wavelength frames, 0.75–5.0 µm), fetched through `backend/tiles.py`. The upstream URL is `LUMASPHERE_HIPS_URL` (default: IRSA). Wavelengths, blank frames, date range and the release version are all read from its `properties` file, so a new release needs no code change |
-| Time-lapse images | SPHEREx level-2 exposures. IRSA's image search (SIA) lists the exposures covering a position; the pixels are read from NASA's public cloud copy (`nasa-irsa-spherex` on AWS), with IRSA itself as the fallback |
-| WISE comparison | AllWISE atlas images (2010), read from the HiPS tiles made by CDS: IRSA's copy first, CDS's as the fallback (`LUMASPHERE_WISE_HIPS`) |
-| Stars, galaxies, nebulae | CDS Sesame / SIMBAD (also gives distance and proper motion) |
-| Planets, asteroids, comets | NASA JPL Horizons (position today and path during the SPHEREx survey) |
-| Map clicks, Names overlay | SIMBAD's query service, through our backend |
-| Gaia overlays | Gaia DR3 from ESA's archive, IRSA's copy as the fallback, through our backend |
+| Sky map and time-lapse images | NASA IRSA: SPHEREx all-sky maps and individual exposures |
+| WISE comparison | AllWISE images (2010), via IRSA and CDS |
+| Star and galaxy names | CDS SIMBAD |
+| Planets, asteroids, comets | NASA JPL Horizons, JPL Small-Body Database, IMCCE SkyBoT |
+| Star positions and motion | ESA Gaia DR3 |
 
-### Details worth knowing
+### Settings
 
-**Time-lapse**
-- **A visit, a detector, an exposure.** SPHEREx returns to every spot about every six months. During a visit it
-  photographs the spot roughly 20 times with each detector, each time through a slightly different color. One
-  time-lapse frame is the median of one visit's exposures from one detector, re-gridded north-up onto a 128×128 grid.
-- **Only the needed rows are downloaded.** Each exposure is a 65 MB file; the backend reads its header and just the
-  rows around the target with HTTP range requests (under 1 MB for the default 6′ patch). IRSA's cutout service was tried first and
-  rejected: every cutout is about 4 MB whatever its size, and parallel downloads get rate-limited.
-- **The answer is streamed.** `/api/timelapse` sends one JSON object per line: the plan (visits and exposure times),
-  progress counts, then the result. Results are cached in `backend/.cache/timelapse/` for a day (new exposures are
-  published weekly). If the user moves on, the download is cancelled.
-- **Brightness** is summed within 12″ of the source after subtracting the sky level measured in a ring around it.
-  Treat the values as approximate. Saturated stars cannot be measured and are reported as such.
-- SPHEREx pixels are 6.15″, so the frames are soft. A 3′ patch is about 30 detector pixels across.
+All optional, set as environment variables.
 
-**Sky map**
-- **Fast stars are moved to where SPHEREx saw them.** SIMBAD positions are for the year 2000. Barnard's Star has moved 4.5 arcminutes since then, so the backend applies proper motion to the survey mid-point (2025.8). The pale ring shows the year-2000 position, the red ring where SPHEREx saw it (the panel's "On the map" key draws both). The Names and Gaia markers are moved the same way.
-- **One HiPS per wavelength, not Aladin's cube mode.** Aladin Lite 3.8.2 can open the cube directly, but its cube
-  renderer re-downloads every visible tile twice a second, has no low-resolution fallback while tiles load (the sky
-  went black on zoom) and picks the wrong frame for a slice number. So `tiles.py` exposes frame *k* as an ordinary
-  HiPS at `/hips/<version>/<k>/` (it maps `Npix123.png` to IRSA's `Npix123_k.png`), which uses Aladin's solid 2D
-  path: blurry preview first, sharp tiles fade in, nothing is fetched twice.
-- **Changing wavelength never blanks the sky.** The new frame's layer is added on top of the current one and the old
-  one is removed only once the new tiles are on screen (`swapLayers()` in `app.js`). A switch takes about 0.3 s when
-  cached; the sweep runs at about 2 frames per second (Aladin only looks for new tiles every 500 ms).
-- **Caching, three layers deep.** Disk (`backend/.cache/`, capped by `LUMASPHERE_CACHE_GB`, default 5, least recently
-  used tiles deleted first) → browser (tiles are served `immutable`, the release version is part of the URL) →
-  GPU (Aladin). A new IRSA release changes the version, so every layer refreshes by itself.
-- **Look-ahead.** When you search, the destination's tiles start downloading while the camera is still flying
-  there; during a sweep the next few wavelengths are fetched in advance; when the view is still, the neighbouring
-  wavelengths of a zoomed-in view are fetched so the slider responds at once.
-- Frames 50 and 51 are blank (dichroic channels) and the slider skips them. The backend finds blank frames by
-  asking IRSA, nothing is hard-coded. Frame index = 17·(detector−1) + (channel−1).
-- The deepest tile level is HiPS order 5 (about 13″ per pixel), so below roughly 2° field of view you are looking at
-  magnified pixels. The time-lapse panel shows the sharper individual exposures.
-- Shareable links: `?q=Barnard's Star` opens a named object and `?ra=133.795&dec=-7.245` opens the time-lapse of that
-  position (decimal degrees, or `?ra=08h55m10.8s&dec=-07d14m42s`). Both take `&fov=` (map width in degrees) and
-  `&wl=` (wavelength in µm). A link with only `?view=…` restores the camera without selecting anything.
-
-**Catalogs**
-- **Nothing in the browser talks to the CDS servers in Strasbourg.** They were down while this was built
-  (HTTP 404), which broke Aladin's built-in Names and Gaia overlays. The backend now asks SIMBAD's Strasbourg and
-  Harvard sites side by side and uses whichever answers first, with a 10-second limit, and gets Gaia from ESA.
-- **Names work like place names on a street map.** Far out you see a few famous objects spread over the view
-  (M 42, M 31, the LMC); each zoom step brings in the next tier; at the closest zoom everything catalogued is
-  there. Two labels never overlap: the better-known one is written and the other shows as a small dot until
-  zooming in makes room. Markers sit exactly on their objects, and no label hides under the header, the wavelength rail or a panel.
-- **How:** the sky is cut into a grid per zoom level (12 cells of 60° at level 0, each level halves the cell, down
-  to 3.5′ at level 10), and a cell holds its best-known objects by number of papers in SIMBAD. A view needs about
-  ten cells. Cells are cached in the page, by the browser and in `backend/.cache/names/` (30 days), so panning
-  back costs nothing. The three widest levels are cut from one list of the sky's 20,000 best-known objects.
-  The first visit to an uncached area takes a few seconds, because SIMBAD needs about a second per cell.
-- **Gaia stars work like the names.** Each cell of the same grid keeps its 24 brightest Gaia DR3 stars, more at the two closest levels (cached in
-  `backend/.cache/stars/` for good: the catalog never changes). A view marks at most about 150 of them, brightest
-  first, and never two within 30 pixels of each other, so the marks stay readable from the whole sky down to a
-  single arcminute. The brightest few of a view get a larger cross.
-- Clicking a name (the text or its marker) or a Gaia marker opens that exact object in the side panel.
-
-### Settings (environment variables, all optional)
-| Variable | Default | Meaning |
+| Variable | Default | What it does |
 |---|---|---|
-| `LUMASPHERE_HIPS_URL` | IRSA SPHEREx all-sky cube | Upstream HiPS cube to mirror |
-| `LUMASPHERE_CACHE_DIR` | `backend/.cache` | Where tiles, time-lapses and name cells are kept. Safe to delete at any time |
-| `LUMASPHERE_CACHE_GB` | `5` | Disk budget for the cache |
-| `LUMASPHERE_SPHEREX_COLLECTIONS` | `spherex_dr1,spherex_qr3` | Data releases searched for exposures, most trusted first. Add the next release here when IRSA publishes it |
-| `LUMASPHERE_SPHEREX_CLOUD` | `https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com/` | Cloud copy the exposures are read from |
+| `LUMASPHERE_CACHE_DIR` | `backend/.cache` | Where downloads are cached (safe to delete) |
+| `LUMASPHERE_CACHE_GB` | `5` | Cache size limit |
+| `LUMASPHERE_HIPS_URL` | IRSA SPHEREx map | Sky map source |
+| `LUMASPHERE_SPHEREX_COLLECTIONS` | `spherex_dr1,spherex_qr3` | SPHEREx data releases to search |
 
-## Test targets (from the challenge)
-Barnard's Star · Epsilon Indi B (`eps Ind B`) · WISE 0855 (`WISE J085510.83-071442.5`) · RW Aurigae · R Draconis.
-All of them are one click away in the target list on the first screen.
+## Challenge targets
 
-## Tested on
-Chrome (Apple GPU), WebKit (Safari's engine) and software-rendered Chromium, driven by scripts; phone layout at
-390×844 upright and sideways. Not yet tried by hand on a real phone.
+Barnard's Star · Epsilon Indi B · WISE 0855 · RW Aurigae · R Draconis. Each one is a click away on the first
+screen, with a note on what to look for.
 
-## Next up
-- [x] Follow an asteroid or comet through its exposures ("Follow it"; planets saturate, so they're left out)
-- [x] Check every challenge target against its own time-lapse (Nov 2026). What each shows is written on its
-      card ("What to look for"):
-      Barnard's Star moves ~10″/yr (Difference mode, any detector; saturated below 3.8 µm);
-      Epsilon Indi B moves ~6″ in 1.4 yr (clearest D5–D6; its first visit has artifacts, so ignore that brightness);
-      WISE 0855 only shows at 3.8–5 µm (D5–D6), moving ~8″, too faint to judge brightness;
-      RW Aur really changes (+40–55% at 0.75–1.6 µm, about −50% at 3.8–5 µm, Sep 2025 → Sep 2026);
-      R Dra saturates everywhere; its glow fades to ~40% (D4, D6), a less certain measure
-- [ ] Contamination flags: the FLAGS layer is not read yet (Epsilon Indi B's first visit would be caught by it)
-- [ ] Phone "point at the sky" mode (GPS + compass → RA/Dec)
-- [ ] Known asteroids overlay (SkyBoT) on time-lapse frames
-- [ ] Deploy over HTTPS (needed for phone sensors)
+## Credits
+
+Built for NASA Space Apps 2026. Data courtesy of NASA/JPL-Caltech/IPAC, CDS Strasbourg, ESA and IMCCE.
