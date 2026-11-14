@@ -9,6 +9,8 @@ Serves the frontend, the sky tiles and a small JSON API:
   GET /api/identify?ra=&dec=      -> what is at this spot (click on the map)
   GET /api/names/<level>/<band>/<cell> -> the best-known SIMBAD objects in one cell of the name grid ("Names" switch)
   GET /api/gaia?ra=&dec=&radius=  -> Gaia DR3 stars around a position ("Gaia stars" switches)
+  GET /api/asteroids?ra=&dec=&radius=&date= -> known asteroids there on that date (see asteroids.py)
+  GET /api/asteroid-suggest?q=    -> asteroid / comet names for the search box
 
 Resolution order:
   1. Coordinates ("269.45 4.69", "17:57:48.5 +04:41:36", "08h55m10.8s -07d14m42s", "RA 269.45 Dec 4.69")
@@ -41,9 +43,11 @@ from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+import asteroids
 import tiles
 import timelapse
 import wise
+import track
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
@@ -138,12 +142,27 @@ async def lifespan(_app: FastAPI):
     http = httpx.AsyncClient(timeout=25, headers={"User-Agent": "Lumasphere/1.0"})
     await tiles.store.start()
     await timelapse.start()
+    await asteroids.start()
+    fast_stars.start()
+    warm = asyncio.create_task(warm_connections())
     try:
         yield
     finally:
+        warm.cancel()
+        await asteroids.stop()
         await timelapse.stop()
         await tiles.store.stop()
         await http.aclose()
+
+
+async def warm_connections() -> None:
+    """Open the connections a map click needs while nobody is waiting: setting one up takes
+    1-2 s, which otherwise lands on the first click after a restart."""
+    probes = [http.get(SIMBAD_TAP[1], params={"REQUEST": "doQuery", "LANG": "ADQL", "FORMAT": "csv",
+                                              "QUERY": "SELECT TOP 1 main_id FROM basic"}, timeout=15),
+              http.get(VIZIER_GAIA, params={"-source": "I/355/gaiadr3", "-c": "0 +0", "-c.rs": "1", "-out.max": "1"}, timeout=15),
+              http.get(GAIA_TAP[0][0].rsplit("/", 1)[0] + "/availability", timeout=15)]
+    await asyncio.gather(*probes, return_exceptions=True)
 
 
 app = FastAPI(title="Lumasphere API", lifespan=lifespan)
@@ -151,6 +170,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], a
 app.include_router(tiles.router)
 app.include_router(timelapse.router)
 app.include_router(wise.router)
+app.include_router(asteroids.router)
+app.include_router(track.router)
 
 
 class ResolveCache:
@@ -388,15 +409,39 @@ async def lookup(q: str) -> dict | None:
         }
     key = q.lower()
     result = None
+    if key.startswith("asteroid:"):
+        # From the Asteroids layer or an asteroid suggestion: we already know it is a small body,
+        # so skip SIMBAD (which could match a star of the same name).
+        return await small_body(q.split(":", 1)[1].strip())
     if key in MAJOR_BODIES:
         cmd, label = MAJOR_BODIES[key]
         result = await solar_system(http, cmd, "planet", "Planet" if key not in ("sun", "moon", "pluto") else label)
     if result is None:
         result = await sesame(http, q)
     if result is None:
-        # Asteroid / comet: trailing ';' tells Horizons to search small bodies.
-        result = await solar_system(http, f"{q};", "small-body", "Asteroid")
+        result = await small_body(q)
     return result
+
+
+async def small_body(name: str) -> dict | None:
+    """Asteroid or comet: position + survey path from Horizons, size / family / hazard from SBDB."""
+    if not name:
+        return None
+    # Trailing ';' tells Horizons to search small bodies. Both services are asked at once.
+    found, extra = await asyncio.gather(
+        solar_system(http, f"{name};", "small-body", "Asteroid"),
+        asyncio.wait_for(asteroids.facts(name), 10),
+        return_exceptions=True,
+    )
+    if isinstance(found, BaseException):
+        raise found
+    if found is None:
+        return None
+    extra = extra if isinstance(extra, dict) else {}  # the extra facts must never break the search
+    if extra.get("orbit_class"):
+        found["type_label"] = extra["orbit_class"]
+    found["asteroid"] = extra
+    return found
 
 
 @app.get("/api/resolve")
@@ -467,14 +512,15 @@ def num(row: dict, key: str) -> float | None:
         return None
 
 
-async def gaia_cone(ra: float, dec: float, radius_deg: float, limit: int) -> list[dict]:
+async def gaia_cone(ra: float, dec: float, radius_deg: float, limit: int,
+                    mirrors=GAIA_TAP, timeout: float = 30) -> list[dict]:
     rows = None
-    for url, table in GAIA_TAP:  # one after the other: the fallback is much slower
+    for url, table in mirrors:  # one after the other: the fallback is much slower
         adql = (f"SELECT TOP {limit} source_id, ra, dec, pmra, pmdec, parallax, phot_g_mean_mag FROM {table} "
                 f"WHERE 1 = CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', {ra:.6f}, {dec:.6f}, {radius_deg:.6f})) "
                 "ORDER BY phot_g_mean_mag")
         try:
-            rows = await tap_csv(url, adql, timeout=30)
+            rows = await tap_csv(url, adql, timeout=timeout)
             break
         except (httpx.HTTPError, IndexError, ValueError):
             continue
@@ -482,6 +528,48 @@ async def gaia_cone(ra: float, dec: float, radius_deg: float, limit: int) -> lis
         raise HTTPException(502, "The Gaia archive did not answer. Try again in a moment.")
     return [{"id": r["source_id"], "ra": float(r["ra"]), "dec": float(r["dec"]), "pmra": num(r, "pmra"),
              "pmdec": num(r, "pmdec"), "parallax": num(r, "parallax"), "g": num(r, "phot_g_mean_mag")} for r in rows]
+
+
+VIZIER_GAIA = "https://vizier.cfa.harvard.edu/viz-bin/asu-tsv"  # Harvard's VizieR mirror (CDS's own is often down)
+
+
+async def vizier_gaia(ra: float, dec: float, radius_deg: float, limit: int, timeout: float) -> list[dict]:
+    """Gaia DR3 stars around a position, brightest first, from VizieR's simple cone search.
+    ~1.6 s, against ~2.8 s for ESA's archive: raced against it where a click is waiting."""
+    params = {"-source": "I/355/gaiadr3", "-c": f"{ra:.6f} {dec:+.6f}", "-c.rs": f"{radius_deg * 3600:.2f}",
+              "-out": "Source,RA_ICRS,DE_ICRS,pmRA,pmDE,Plx,Gmag", "-sort": "Gmag", "-out.max": str(limit)}
+    try:
+        r = await asyncio.wait_for(http.get(VIZIER_GAIA, params=params, timeout=timeout), timeout)
+    except asyncio.TimeoutError:
+        raise httpx.ReadTimeout(f"VizieR: no answer within {timeout:.0f} s") from None
+    r.raise_for_status()
+    lines = [ln for ln in r.text.splitlines() if ln.strip() and not ln.startswith("#")]
+    if not lines and "#Column" in r.text:
+        return []  # no star in the circle: VizieR describes the columns but sends no table
+    if not lines or not lines[0].startswith("Source"):
+        raise httpx.HTTPError("not a VizieR table")
+    cols = [c.strip() for c in lines[0].split("\t")]
+    stars = []
+    for ln in lines[3:]:  # after the header, units and dashes rows
+        row = dict(zip(cols, (v.strip() for v in ln.split("\t"))))
+        if num(row, "RA_ICRS") is None:
+            continue
+        stars.append({"id": row["Source"], "ra": num(row, "RA_ICRS"), "dec": num(row, "DE_ICRS"), "pmra": num(row, "pmRA"),
+                      "pmdec": num(row, "pmDE"), "parallax": num(row, "Plx"), "g": num(row, "Gmag")})
+    return stars
+
+
+async def gaia_quick(ra: float, dec: float, radius_deg: float, limit: int, timeout: float = 6) -> list[dict]:
+    """The same Gaia cone from VizieR (Harvard) and ESA side by side; the first answer wins."""
+    async def esa():
+        try:
+            return await gaia_cone(ra, dec, radius_deg, limit, mirrors=GAIA_TAP[:1], timeout=timeout)
+        except HTTPException as e:  # first_good() skips failed mirrors by their httpx error
+            raise httpx.HTTPError(str(e.detail)) from None
+    stars = await first_good([vizier_gaia(ra, dec, radius_deg, limit, timeout), esa()])
+    if stars is None:
+        raise HTTPException(502, "The Gaia archive did not answer. Try again in a moment.")
+    return stars
 
 
 class DayCache:
@@ -721,6 +809,144 @@ async def stars(level: int, band: int, cell: int, response: Response):
     return result
 
 
+# ---------------------------------------------------------------- search suggestions
+_suggest_cache = DayCache(500)
+
+
+def _case_variants(text: str) -> list[str]:
+    """SIMBAD's name search is case-sensitive, so try the ways a name is usually written."""
+    words = text.split(" ")
+    title = " ".join(w[:1].upper() + w[1:] for w in words)
+    # "rw aur" -> "RW Aur", "v1647 ori" -> "V1647 Ori": variable-star names
+    star = " ".join([words[0].upper()] + [w[:1].upper() + w[1:] for w in words[1:]])
+    return list(dict.fromkeys([text, title, star, text[:1].upper() + text[1:], text.upper()]))
+
+
+@app.get("/api/suggest")
+async def suggest(q: str = Query(..., min_length=2, max_length=60)):
+    """Names for the search box as you type: SIMBAD's proper names ("Upper Sco Association",
+    "Orion Nebula", "Barnard's Loop") and designations, best-known first, plus asteroid and
+    comet names. Each part has a short time limit; a slow catalog just leaves its part out."""
+    text = re.sub(r"[%_]", "", " ".join(q.split()))  # LIKE wildcards would only widen the search
+    key = text.lower()
+    hit = _suggest_cache.get(key)
+    if hit:
+        return hit
+
+    async def simbad_names() -> list[dict]:
+        if len(text) < 3:
+            return []
+        # SIMBAD writes proper names as "NAME Upper Sco Association", variable stars as
+        # "V* RW Aur" and named stars as "* eps Ind"; designations ("HD 4128") as they are.
+        patterns = []
+        for v in _case_variants(text.replace("'", "''")):
+            patterns += [f"id LIKE '{prefix}{v}%'" for prefix in ("NAME ", "", "V* ", "* ")]
+        adql = ("SELECT TOP 60 id, main_id, otype, ra, dec, nbref + 0 AS refs FROM ident JOIN basic ON oid = oidref "
+                f"WHERE ({' OR '.join(dict.fromkeys(patterns))}) AND ra IS NOT NULL ORDER BY refs DESC")
+        rows = await first_good(tap_csv(url, adql, timeout=4) for url in SIMBAD_TAP)
+        objects: dict[str, list[dict]] = {}  # main_id -> its names that matched, best-known object first
+        for r in rows or []:
+            objects.setdefault(r["main_id"], []).append(r)
+        out = []
+        for main_id, matched in list(objects.items())[:6]:
+            main = tidy_name(main_id)
+            names_matched = [tidy_name(r["id"]) for r in matched]
+            # Show the object's own name when it matches what was typed, else the first name that did.
+            label = main if main in names_matched else names_matched[0]
+            out.append({"label": label, "query": main_id.strip(), "kind": OTYPE_LABELS.get(matched[0].get("otype", ""), ""),
+                        "also": main if main.lower() != label.lower() else ""})
+        return out
+
+    async def small_bodies() -> list[dict]:
+        try:
+            items = (await asyncio.wait_for(asteroids.asteroid_suggest(text), 4))["items"]
+        except (asyncio.TimeoutError, HTTPException):
+            return []
+        # The name index also matches digits inside catalog numbers ("m42" -> asteroid 224202):
+        # keep only names that really contain what was typed.
+        typed = text.lower().replace(" ", "")
+        items = [a for a in items if typed in a["title"].lower().replace(" ", "")]
+        return [{"label": a["title"], "query": f"asteroid:{a['name']}", "kind": a["family"] or a["type"], "asteroid": True}
+                for a in items[:4]]
+
+    named, bodies = await asyncio.gather(simbad_names(), small_bodies())
+    return _suggest_cache.put(key, {"items": named + bodies})
+
+
+class FastStars:
+    """Every star SIMBAD knows to cross the sky faster than 0.5 arcsec a year (~5,600 of them),
+    kept on disk. Catalogs give their position for the year 2000, which can be arcminutes from
+    where SPHEREx saw them, so a click near one must be checked against where it has moved to.
+    Looking them up here takes microseconds; asking Gaia on every click took ~3 s.
+    Slower stars have drifted at most ~13 arcsec since 2000, which the normal nearest-object
+    search already covers."""
+
+    MIN_PM_MAS_YR = 500
+    PATH = tiles.CACHE_DIR / "fast_stars.csv"
+    MAX_AGE_S = 30 * 86400  # SIMBAD gains new fast stars slowly: refresh monthly
+
+    def __init__(self) -> None:
+        self.rows: list[dict] | None = None  # None until loaded: identify() falls back to asking Gaia
+
+    def start(self) -> None:
+        self._task = asyncio.create_task(self._load())  # never delays startup
+
+    def _parse(self, text: str) -> list[dict]:
+        rows = []
+        for r in csv.DictReader(io.StringIO(text)):
+            ra, dec, pmra, pmdec = num(r, "ra"), num(r, "dec"), num(r, "pmra"), num(r, "pmdec")
+            if None in (ra, dec, pmra, pmdec) or r.get("otype") in ("Pl", "Pl?"):  # planets sit on their star
+                continue
+            rows.append({"main_id": r["main_id"], "otype": r.get("otype", ""), "ra": ra, "dec": dec,
+                         "pmra": pmra, "pmdec": pmdec, "plx_value": num(r, "plx_value")})
+        return rows
+
+    async def _load(self) -> None:
+        try:
+            if self.PATH.exists():
+                self.rows = self._parse(await asyncio.to_thread(self.PATH.read_text, encoding="utf-8"))
+                if time.time() - self.PATH.stat().st_mtime < self.MAX_AGE_S:
+                    return
+            adql = ("SELECT main_id, otype, ra, dec, pmra, pmdec, plx_value FROM basic "
+                    f"WHERE pmra * pmra + pmdec * pmdec > {self.MIN_PM_MAS_YR ** 2} AND ra IS NOT NULL")
+            rows = await first_good(tap_csv(url, adql, timeout=90) for url in SIMBAD_TAP)
+            if not rows:
+                return
+            buf = io.StringIO()
+            writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(rows)
+            self.PATH.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.PATH.with_suffix(".tmp")
+            await asyncio.to_thread(tmp.write_text, buf.getvalue(), encoding="utf-8")
+            tmp.replace(self.PATH)
+            self.rows = self._parse(buf.getvalue())
+        except Exception as e:  # without the list, clicks still work (the Gaia way)
+            print(f"[lumasphere] fast-star list not loaded: {e!r}")
+
+    def near(self, ra: float, dec: float, within_arcsec: float, year: float) -> dict | None:
+        """The fast star whose position in `year` is closest to (ra, dec), if within range."""
+        if self.rows is None:
+            return None
+        best, best_sep = None, within_arcsec
+        cos0 = math.cos(math.radians(dec))
+        dt = year - 2000.0
+        for s in self.rows:
+            if abs(s["dec"] - dec) > 0.6:  # Barnard's star, the fastest, moved < 0.1 deg since 2000
+                continue
+            cosd = max(1e-6, math.cos(math.radians(s["dec"])))
+            now_ra = s["ra"] + s["pmra"] * dt / 3.6e6 / cosd
+            now_dec = s["dec"] + s["pmdec"] * dt / 3.6e6
+            d_ra = (now_ra - ra + 180) % 360 - 180
+            sep = math.hypot(d_ra * cos0, now_dec - dec) * 3600
+            if sep <= best_sep:
+                best, best_sep = s, sep
+        return best
+
+
+fast_stars = FastStars()
+
+
 @app.get("/api/identify")
 async def identify(ra: float = Query(..., ge=0, lt=360), dec: float = Query(..., ge=-90, le=90),
                    radius: float = Query(20, gt=0, le=600, description="how far to look, arcseconds")):
@@ -786,20 +1012,33 @@ async def identify(ra: float = Query(..., ge=0, lt=360), dec: float = Query(...,
                 return star
         return None
 
-    here, mover = await asyncio.gather(simbad_nearest(ra, dec, r_deg), fast_star_here())
     result = None
-    if mover is not None:
-        old_ra, old_dec = moved(mover, 2000.0)  # SIMBAD lists it where it was in 2000
-        result = from_simbad(await simbad_nearest(old_ra, old_dec, 10 / 3600)) or from_gaia(mover)
+    fast = fast_stars.near(ra, dec, max(radius, 15), mid_year)
+    if fast is not None:
+        result = from_simbad([fast])  # the list holds its SIMBAD record: no query needed
+    elif fast_stars.rows is None:
+        # The fast-star list is still downloading (first start only): ask Gaia, the slow way.
+        mover = await fast_star_here()
+        if mover is not None:
+            old_ra, old_dec = moved(mover, 2000.0)  # SIMBAD lists it where it was in 2000
+            result = from_simbad(await simbad_nearest(old_ra, old_dec, 10 / 3600)) or from_gaia(mover)
     if result is None:
-        result = from_simbad(here)
-    if result is None:
+        # Ask Gaia for the nearest star at the same time as SIMBAD, so an unnamed spot waits for
+        # one answer instead of two in a row. ESA only, and briefly: its fallback (IRSA) takes
+        # 20-40 s, and a click that waits that long is worse than plain coordinates.
+        gaia_task = asyncio.create_task(gaia_quick(ra, dec, min(r_deg, 10 / 3600), 1, timeout=6))
+        gaia_task.add_done_callback(lambda t: t.cancelled() or t.exception())
         try:
-            stars = await gaia_cone(ra, dec, min(r_deg, 10 / 3600), 1)
-        except HTTPException:
-            stars = []
-        if stars:
-            result = from_gaia(stars[0])
+            result = from_simbad(await simbad_nearest(ra, dec, r_deg))
+            if result is None:
+                try:
+                    stars = await gaia_task
+                except (HTTPException, httpx.HTTPError):
+                    stars = []
+                if stars:
+                    result = from_gaia(stars[0])
+        finally:
+            gaia_task.cancel()
     if result is None:
         result = {"name": f"{ra:.4f}° {dec:+.4f}°", "ra": ra, "dec": dec, "kind": "coordinates",
                   "type_label": "Sky position (no catalogued object here)", "source": "coordinates"}

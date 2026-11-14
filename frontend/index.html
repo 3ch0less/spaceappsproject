@@ -57,6 +57,7 @@
       </div>
       <label class="check"><input type="checkbox" id="tg-names"> Names<svg class="swatch" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="2.5" fill="var(--mark-ghost)" stroke="none"/></svg></label>
       <label class="check"><input type="checkbox" id="tg-gaia"> Gaia stars<svg class="swatch" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1v10M1 6h10" stroke="var(--mark-gaia)"/></svg></label>
+      <label class="check" title="Known asteroids and comets in this part of the sky right now, from their orbits (IMCCE SkyBoT). Click one to see its path."><input type="checkbox" id="tg-asteroids"> Asteroids<svg class="swatch" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.5 10.5 6 6 10.5 1.5 6z" stroke="var(--mark-asteroid)"/></svg></label>
       <label class="field">Color
         <select id="cmap" aria-label="Color style">
           <option value="magma">Heat</option>
@@ -89,8 +90,35 @@
         <h2 id="info-name"></h2>
         <p id="info-type" class="insp-type"></p>
         <p id="info-blurb" class="blurb"></p>
+        <p id="info-watch" class="watch" hidden></p>
         <dl id="info-facts" class="facts"></dl>
       </header>
+
+      <!-- Follow it: an asteroid or comet, every frame centred on where it was at that moment -->
+      <section id="fl" class="insp-sec" aria-label="Follow it through SPHEREx's images" hidden>
+        <div class="sec-head">
+          <h3>Follow it</h3>
+          <span id="fl-sub" class="sec-sub">every frame centred on where it was</span>
+        </div>
+        <div class="tl-frame">
+          <div id="fl-hud" class="tl-hud" hidden></div>
+          <div id="fl-stage" class="tl-stage" tabindex="0" aria-label="Frames of the moving object. Arrow keys step, space plays or pauses.">
+            <canvas id="fl-canvas"></canvas>
+            <div id="fl-status" class="tl-status" role="status">
+              <p id="fl-status-text">SPHEREx photographed it as it moved. Find every exposure that caught it and line them up on it.</p>
+              <div class="tl-progress" id="fl-progress" hidden><div id="fl-bar"></div></div>
+              <button id="fl-go" class="btn primary" type="button">Follow it through SPHEREx's images</button>
+            </div>
+          </div>
+          <div class="tl-transport">
+            <button id="fl-prev" class="tl-btn" type="button" aria-label="Previous frame" title="Previous frame" disabled><svg class="icon" aria-hidden="true"><use href="#i-step-back"/></svg></button>
+            <button id="fl-play" class="tl-btn play" type="button" aria-label="Play" disabled><svg class="icon icon-solid" aria-hidden="true"><use href="#i-play"/></svg></button>
+            <button id="fl-next" class="tl-btn" type="button" aria-label="Next frame" title="Next frame" disabled><svg class="icon" aria-hidden="true"><use href="#i-step-forward"/></svg></button>
+            <input id="fl-slider" class="fl-slider slim" type="range" min="0" max="0" value="0" aria-label="Frame" disabled>
+          </div>
+        </div>
+        <p id="fl-note" class="sec-note"></p>
+      </section>
 
       <!-- Time-lapse: one image per SPHEREx visit, played like a flipbook -->
       <section id="tl" class="insp-sec" aria-label="Time-lapse" hidden>

@@ -68,13 +68,23 @@ VISIT_MAX_DAYS = 100          # continuously observed fields (near the ecliptic 
 VISIT_BIN_DAYS = 50           # chunks of about this length
 MAX_PER_VISIT = 24            # exposures used per visit and detector
 DOWNLOADS = 24                # parallel range requests
+# Exposures worked on at once. Each needs two requests in a row (header, then rows); limiting
+# whole exposures rather than single requests makes them finish one by one from the first
+# second, instead of every header first and all the rows in a burst at the end. Measured
+# downloads are bandwidth-bound (~6-12 MB/s to NASA's S3 copy), so more parallelism adds nothing.
+EXPOSURES_AT_ONCE = 16
+RESULT_TTL = 7 * 24 * 3600    # a finished time-lapse; new exposures are published weekly
+RESULT_VERSION = 2            # bump when the result's contents change, so cached ones are rebuilt (2: halo)
 APERTURE_ARCSEC = 12.0        # brightness is summed inside this radius...
 ANNULUS_ARCSEC = (24.0, 40.0) # ...after subtracting the sky level measured in this ring
+HALO_ARCSEC = (15.0, 30.0)    # saturated stars: their glow is measured in this ring instead...
+HALO_SKY_ARCSEC = (60.0, 85.0) # ...against the sky out here, clear of the glow (fits in the 3' view)
 MJD0 = datetime(1858, 11, 17)
 
 router = APIRouter()
 _client: httpx.AsyncClient | None = None
 _slots = asyncio.Semaphore(DOWNLOADS)
+_exposure_slots = asyncio.Semaphore(EXPOSURES_AT_ONCE)
 _jobs: dict[str, "Job"] = {}
 _wave_tables: dict[int, dict] = {}
 _plan_memory: dict[str, tuple[float, dict]] = {}
@@ -400,17 +410,25 @@ def build(ra: float, dec: float, fov: float, det: int, scale: float, shots: list
             radius = np.hypot(xx - cx, yy - cy) * scale
             aperture = radius <= APERTURE_ARCSEC
             ring = (radius >= ANNULUS_ARCSEC[0]) & (radius <= ANNULUS_ARCSEC[1])
+            halo_ring = (radius >= HALO_ARCSEC[0]) & (radius <= HALO_ARCSEC[1])
+            far_ring = (radius >= HALO_SKY_ARCSEC[0]) & (radius <= HALO_SKY_ARCSEC[1])
             for s in group:
                 img = s["image"]
-                flux = err = None
+                flux = err = halo = None
                 if np.isfinite(img[aperture]).all() and np.isfinite(img[ring]).sum() > 20:
                     sky = float(np.nanmedian(img[ring]))
                     sigma = float(1.4826 * np.nanmedian(np.abs(img[ring] - sky)))
                     flux = float((img[aperture] - sky).sum() * pixel_sr * 1e9)        # MJy/sr -> mJy
                     err = float(sigma * math.sqrt(aperture.sum()) * pixel_sr * 1e9)
+                elif np.isfinite(img[halo_ring]).mean() > 0.6 and np.isfinite(img[far_ring]).sum() > 20:
+                    # Saturated: the detector gave up at the star's core, so there is no total to add
+                    # up. The glow around the core scales with the star's brightness, so its average
+                    # level (in MJy/sr) still says how much brighter or fainter the star got.
+                    halo = float(np.nanmean(img[halo_ring]) - np.nanmedian(img[far_ring]))
                 exposures_out.append({
                     "mjd": round(s["mjd"], 4), "visit": vid, "wl": round(s["wl"], 4), "bw": round(s["bw"], 4),
                     "flux": None if flux is None else round(flux, 4), "err": None if err is None else round(err, 4),
+                    "halo": None if halo is None else round(halo, 4),
                 })
             mjds = [s["mjd"] for s in group]
             visits_out.append({
@@ -462,7 +480,8 @@ async def run_job(job: Job, ra: float, dec: float, fov: float, det: int) -> byte
 
     async def one(exp):
         try:
-            return await fetch_exposure(exp, ra, dec, fov, gra, gdec)
+            async with _exposure_slots:  # in visit order: the first visit's exposures finish first
+                return await fetch_exposure(exp, ra, dec, fov, gra, gdec)
         except Exception as e:  # one unreadable exposure must not sink the whole time-lapse
             log.warning("exposure skipped: %r", e)
             return None
@@ -493,12 +512,12 @@ async def timelapse(
     if fov not in FOV_CHOICES:
         raise HTTPException(400, f"fov must be one of {FOV_CHOICES}")
     ra, dec = round(ra, 5), round(dec, 5)
-    key = "tl_" + hashlib.sha1(f"{ra:.5f}|{dec:.5f}|{fov}|{det}|{GRID}".encode()).hexdigest()[:20]
+    key = "tl_" + hashlib.sha1(f"{ra:.5f}|{dec:.5f}|{fov}|{det}|{GRID}|{RESULT_VERSION}".encode()).hexdigest()[:20]
 
     async def stream():
         path = result_path(key)
         try:
-            if time.time() - path.stat().st_mtime < PLAN_TTL:
+            if time.time() - path.stat().st_mtime < RESULT_TTL:
                 yield await asyncio.to_thread(path.read_bytes) + b"\n"
                 return
         except OSError:
