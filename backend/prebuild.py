@@ -12,12 +12,13 @@ A fresh time-lapse downloads ~40-50 MB per detector (about 4-10 s each on a good
 
 import argparse
 import json
+import os
 import sys
 import time
 
 import httpx
 
-SERVER = "http://localhost:8000"
+SERVER = os.environ.get("SERVER", "http://localhost:8000").rstrip("/")
 TARGETS = ["Barnard's Star", "eps Ind B", "WISE J085510.83-071442.5", "RW Aur", "R Dra", "M42"]
 
 

@@ -1,0 +1,16 @@
+# One-click deploy on Render (render.com → New → Blueprint → this repo).
+services:
+  - type: web
+    name: lumasphere
+    runtime: docker
+    rootDir: owais-work
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: LUMASPHERE_CACHE_GB
+        value: "5"
+    # On a paid plan, keep the cache across restarts with a disk:
+    # disk:
+    #   name: cache
+    #   mountPath: /data
+    #   sizeGB: 10

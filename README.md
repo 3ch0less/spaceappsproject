@@ -27,6 +27,24 @@ connection). After that they are served from `backend/.cache/` in a few millisec
 them too. A time-lapse takes about 8 seconds the first time and is instant afterwards.
 **Before a demo, click through the targets you plan to show once** so everything is already cached.
 
+## Deploy it
+
+Everything (API, sky-tile proxy, frontend) is one container. From `owais-work/`:
+
+```bash
+docker build -t lumasphere .
+docker run -p 8000:8000 -v lumasphere-cache:/data lumasphere
+```
+
+- **Render:** New → Blueprint → this repo (uses `render.yaml` at the repo root). **Fly.io / Railway /
+  Cloud Run / any Docker host:** point it at `owais-work/Dockerfile`; it listens on `$PORT` (default 8000).
+- Health check: `GET /api/health`.
+- Mount a volume at `/data` to keep the cache across restarts; without one it starts empty and fills as
+  people look around (first views of a patch are slower). Size it with `LUMASPHERE_CACHE_GB` (default 5).
+- Runs one worker on purpose (the caches live in the process). Give it ~1 GB RAM; time-lapses are
+  numpy-heavy. Outbound internet is required (IRSA, SIMBAD, JPL, Gaia, IMCCE).
+- After deploying, warm the demo targets: `SERVER=https://your-app.example python backend/prebuild.py`.
+
 ## Using the time-lapse
 
 - **Open it:** search for something, pick a target from the list, or click anywhere on the map. Clicking does not move the
