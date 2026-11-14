@@ -50,12 +50,37 @@
         <h2 id="info-name"></h2>
         <p id="info-type" class="muted"></p>
         <p id="info-blurb" class="blurb"></p>
+        <p id="info-watch" class="watch" hidden></p>
         <dl id="info-facts" class="facts"></dl>
         <div class="actions">
           <button id="act-zoom" class="btn">Zoom in closer</button>
           <button id="act-share" class="btn ghost">Copy link</button>
         </div>
       </header>
+
+      <!-- Follow it: an asteroid or comet, every frame centred on where it was at that moment -->
+      <section id="fl" class="insp-sec" aria-label="Follow it through SPHEREx's images" hidden>
+        <div class="sec-head">
+          <h3>Follow it</h3>
+          <span id="fl-sub" class="muted">every frame centred on where it was</span>
+        </div>
+        <div id="fl-stage" class="tl-stage" tabindex="0" aria-label="Frames of the moving object. Arrow keys step, space plays or pauses.">
+          <canvas id="fl-canvas"></canvas>
+          <div id="fl-hud" class="tl-hud" hidden></div>
+          <div id="fl-status" class="tl-status" role="status">
+            <p id="fl-status-text">SPHEREx photographed it as it moved. Find every exposure that caught it and line them up on it.</p>
+            <div class="tl-progress" id="fl-progress" hidden><div id="fl-bar"></div></div>
+            <button id="fl-go" class="btn" type="button">Follow it through SPHEREx's images</button>
+          </div>
+        </div>
+        <div class="tl-transport">
+          <button id="fl-prev" class="tl-btn" type="button" aria-label="Previous frame" title="Previous frame" disabled>‹</button>
+          <button id="fl-play" class="tl-btn play" type="button" aria-label="Play" disabled>▶</button>
+          <button id="fl-next" class="tl-btn" type="button" aria-label="Next frame" title="Next frame" disabled>›</button>
+          <input id="fl-slider" class="fl-slider" type="range" min="0" max="0" value="0" aria-label="Frame" disabled>
+        </div>
+        <p id="fl-note" class="sec-note"></p>
+      </section>
 
       <!-- Time-lapse: one image per SPHEREx visit, played like a flipbook -->
       <section id="tl" class="insp-sec" aria-label="Time-lapse" hidden>
@@ -142,6 +167,7 @@
       </div>
       <label class="toggle"><input type="checkbox" id="tg-names"> Names</label>
       <label class="toggle"><input type="checkbox" id="tg-gaia"> Gaia stars</label>
+      <label class="toggle" title="Known asteroids and comets in this part of the sky right now, from their orbits (IMCCE SkyBoT). Click one to see its path."><input type="checkbox" id="tg-asteroids"> Asteroids</label>
       <select id="cmap" aria-label="Color style">
         <option value="magma">Heat</option>
         <option value="grayscale">Black &amp; white</option>

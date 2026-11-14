@@ -75,6 +75,20 @@ backend/ (Python FastAPI)
                 GET /api/warm                     "these tiles are needed soon" (look-ahead)
                 GET /api/cache                    cache statistics
   timelapse.py  GET /api/timelapse?ra=&dec=&fov=&det=   one image per visit + brightness per exposure
+                (saturated stars: the glow 15-30" out is measured instead, as "halo")
+  track.py      GET /api/track?q=Vesta&fov=12     "Follow it": an asteroid/comet through every exposure that
+                caught it, each frame centred on its JPL Horizons position at that moment (~30-60 s fresh)
+  prebuild.py   python prebuild.py  (server running)  builds the demo targets' time-lapses (all 6 detectors)
+                and the Vesta / Ceres / Psyche "Follow it" views ahead of time so they open instantly; kept
+                7 days. A fresh time-lapse is ~3-5 s finding exposures at IRSA + ~4-10 s downloading
+                ~40-50 MB (bandwidth-bound) per detector.
+  main.py       GET /api/suggest?q=               names as you type: SIMBAD named objects + asteroids/comets
+                (map clicks check a local list of the ~5,600 fastest-moving stars, backend/.cache/fast_stars.csv,
+                 refreshed monthly from SIMBAD, instead of asking Gaia every time)
+  asteroids.py  GET /api/asteroids?ra=&dec=&radius=&date=  known asteroids/comets there at that moment ("Asteroids" switch)
+                GET /api/asteroid-suggest?q=      asteroid / comet names for the search box
+                (+ size, orbit family, hazard flag from JPL's Small-Body Database for asteroid searches;
+                 search "asteroid:<name>" to skip the star catalogs)
 ```
 
 | Piece | Source |
@@ -160,8 +174,15 @@ Chrome (Apple GPU), WebKit (Safari's engine) and software-rendered Chromium, dri
 390×844 upright and sideways. Not yet tried by hand on a real phone.
 
 ## Next up
-- [ ] Follow a planet or asteroid through its exposures (today the patch stays fixed on the sky)
-- [ ] Look for WISE 0855 itself in the detector 6 frames, and study the Epsilon Indi B frames
+- [x] Follow an asteroid or comet through its exposures ("Follow it"; planets saturate, so they're left out)
+- [x] Check every challenge target against its own time-lapse (Nov 2026). What each shows is written on its
+      card ("What to look for"):
+      Barnard's Star moves ~10″/yr (Difference mode, any detector; saturated below 3.8 µm);
+      Epsilon Indi B moves ~6″ in 1.4 yr (clearest D5–D6; its first visit has artifacts, so ignore that brightness);
+      WISE 0855 only shows at 3.8–5 µm (D5–D6), moving ~8″, too faint to judge brightness;
+      RW Aur really changes (+40–55% at 0.75–1.6 µm, about −50% at 3.8–5 µm, Sep 2025 → Sep 2026);
+      R Dra saturates everywhere; its glow fades to ~40% (D4, D6), a less certain measure
+- [ ] Contamination flags: the FLAGS layer is not read yet (Epsilon Indi B's first visit would be caught by it)
 - [ ] Phone "point at the sky" mode (GPS + compass → RA/Dec)
 - [ ] Known asteroids overlay (SkyBoT) on time-lapse frames
 - [ ] Deploy over HTTPS (needed for phone sensors)

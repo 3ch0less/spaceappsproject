@@ -96,6 +96,9 @@ button, input, select { font: inherit; color: inherit; }
 }
 .blurb { color: #d5dbf5; }
 .blurb:empty { display: none; }
+.watch { margin: 8px 0 0; padding: 9px 11px; border-left: 3px solid var(--accent-2); border-radius: 6px;
+  background: rgba(125, 211, 252, 0.08); color: #d5dbf5; font-size: 13px; line-height: 1.45; }
+.watch strong { color: #fff; }
 .facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 14px 0; font-size: 13px; }
 .facts dt { color: var(--muted); }
 .facts dd { margin: 0; }
@@ -167,6 +170,7 @@ body.has-panel .toast { left: calc((100vw - var(--panel-w)) / 2); }
 .tl-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .tl-track { flex: 1; min-width: 0; height: 54px; margin-left: 4px; }
 .tl-track svg { display: block; overflow: visible; }
+.fl-slider { flex: 1; min-width: 0; margin-left: 6px; accent-color: var(--accent); }
 .tl-axis { stroke: rgba(160, 180, 255, 0.32); stroke-width: 1; }
 .tl-tick { fill: var(--muted); font: 10px var(--font); text-anchor: middle; }
 .tl-tick.year { fill: #cfd5ef; font-weight: 600; }

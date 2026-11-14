@@ -11,6 +11,7 @@
 
 import { createTimelapse } from "./timelapse.js";
 import { createNames } from "./names.js";
+import { createFollow } from "./follow.js";
 
 // Keep in sync with the <link rel="modulepreload"> in index.html.
 const ALADIN_URL = "https://cdn.jsdelivr.net/npm/aladin-lite@3.8.2/dist/aladin.js";
@@ -25,16 +26,23 @@ const DRIFT_DEG_PER_S = 1.8;    // slow auto-rotate on the welcome screen
 
 // The challenge's test targets plus a few crowd-pleasers.
 const FEATURED = [
-  { label: "Barnard's Star", q: "Barnard's Star", fov: 0.5,
-    blurb: "The fastest-moving star in our sky, just 6 light-years away. It creeps about 10 arcseconds every year, enough to shift between SPHEREx's sky maps." },
-  { label: "Epsilon Indi B", q: "eps Ind B", fov: 0.5,
-    blurb: "A pair of brown dwarfs orbiting the star Epsilon Indi, 12 light-years away. Brown dwarfs are too heavy to be planets and too light to be stars. They glow mostly in infrared." },
-  { label: "WISE 0855", q: "WISE J085510.83-071442.5", fov: 0.4, name: "WISE 0855−0714",
-    blurb: "The coldest brown dwarf known, about as cold as the North Pole. Invisible to the eye, it only shows up at the longest infrared wavelengths. Try sliding toward 4.5 µm." },
-  { label: "RW Aurigae", q: "RW Aur", fov: 0.5,
-    blurb: "A young star still wrapped in its birth disk. Clumps of dust passing in front of it make it brighten and fade unpredictably." },
-  { label: "R Draconis", q: "R Dra", fov: 0.5,
-    blurb: "A pulsating giant star that swells and shrinks, changing brightness on an eight-month cycle." },
+  // `watch` and `det` come from checking SkyShift's own time-lapses of each target (Nov 2026):
+  // what really shows, in which detector, and what doesn't.
+  { label: "Barnard's Star", q: "Barnard's Star", fov: 0.5, det: 2,
+    blurb: "The fastest-moving star in our sky, just 6 light-years away. It creeps about 10 arcseconds every year, enough to shift between SPHEREx's sky maps.",
+    watch: "Switch the time-lapse to Difference: the red-and-blue pair at the centre is the star itself, about 10″ further north after a year (1.6 SPHEREx pixels), just as its catalogued motion predicts. Other stars show faint pairs too, because the visits line up only to about 1″; Barnard's is far stronger. It is too bright to measure how bright it is below 3.8 µm (it saturates detectors 1–4)." },
+  { label: "Epsilon Indi B", q: "eps Ind B", fov: 0.5, det: 6,
+    blurb: "A pair of brown dwarfs orbiting the star Epsilon Indi, 12 light-years away. Brown dwarfs are too heavy to be planets and too light to be stars. They glow mostly in infrared.",
+    watch: "Clearest in detectors 5–6 (3.8–5 µm). In Difference mode it moves about 6″ south-east over 1.4 years, matching its catalogued motion. Its first visit (spring 2025) looks brighter or fainter than the later ones in several detectors, in both directions: treat that as image artifacts. Brown dwarfs vary by only a few percent, and from October 2025 on it is steady." },
+  { label: "WISE 0855", q: "WISE J085510.83-071442.5", fov: 0.4, name: "WISE 0855−0714", det: 5,
+    blurb: "The coldest brown dwarf known, about as cold as the North Pole. Invisible to the eye, it only shows up at the longest infrared wavelengths. Try sliding toward 4.5 µm.",
+    watch: "Only visible at 3.8–5 µm (detectors 5 and 6), as a faint dot at the centre. Between May 2025 and April 2026 it shifts about 8″ west, matching its catalogued motion. At shorter wavelengths it is too cold to show: any dot near the centre there is a background object (it doesn't move). Its brightness readings are too noisy to call a change." },
+  { label: "RW Aurigae", q: "RW Aur", fov: 0.5, det: 2,
+    blurb: "A young star still wrapped in its birth disk. Clumps of dust passing in front of it make it brighten and fade unpredictably.",
+    watch: "A real change, well beyond the measurement noise: between September 2025 and September 2026 it got 40–55% brighter at 0.75–1.6 µm (detectors 1–2) while fading by about half at 3.8–5 µm (detectors 5–6). Press “Load the other detectors” under the spectrum to see both." },
+  { label: "R Draconis", q: "R Dra", fov: 0.5, det: 6,
+    blurb: "A pulsating giant star that swells and shrinks, changing brightness on an eight-month cycle.",
+    watch: "So bright that it saturates every SPHEREx detector, so its total brightness can't be measured. Judged from the glow around it instead (less certain), it faded to about 40% of its June 2025 level by mid-2026 at 2.4–5 µm (detectors 4 and 6). In Blink mode, watch the glow shrink." },
   { label: "Orion Nebula", q: "M42", fov: 2,
     blurb: "A stellar nursery 1,300 light-years away. Infrared light shines through its dust to reveal the newborn stars inside." },
   { label: "Andromeda Galaxy", q: "M31", fov: 4,
@@ -74,6 +82,7 @@ let frame = 0;            // the wavelength frame the UI is asking for
 let colormap = "magma";
 let targetOverlay, targetCatalog;
 let timelapse;            // the flipbook + spectrum in the inspector (timelapse.js)
+let follow, followCat;    // an asteroid followed through its exposures (follow.js) + its marker on the map
 let names;                // object labels on the map (names.js)
 let current = null;       // last resolved target
 let sweeping = false;     // wavelength sweep animation
@@ -308,6 +317,7 @@ function setColormap(name) {
   colormap = name;
   for (const rec of [sky.shown, sky.pending]) rec?.hips.setColormap(name);
   timelapse.redraw(); // the time-lapse frames follow the same colour style
+  follow.redraw();
 }
 
 async function toggleSweep() {
@@ -433,8 +443,10 @@ async function search(q, featured = null, fovOverride = null) {
   stopIdleDrift();
   $("#welcome").hidden = true;
   $("#suggestions").hidden = true;
-  $("#search-input").value = featured?.label || q;
-  toast(`Looking for ${featured?.label || q}…`, 20000);
+  // "NAME Upper Sco Association" (SIMBAD's form) and "asteroid:Psyche" read as the plain name.
+  const shown = featured?.label || q.replace(/^(NAME\s+|asteroid:\s*)/i, "");
+  $("#search-input").value = shown;
+  toast(`Looking for ${shown}…`, 20000);
   try {
     const t = { ...(await resolve(q)) };
     if (ticket !== searchTicket) return; // a newer search took over
@@ -448,6 +460,12 @@ async function search(q, featured = null, fovOverride = null) {
   }
 }
 
+// An asteroid or comet whose name we already know (Asteroids layer, asteroid suggestion).
+// The "asteroid:" prefix makes the backend skip the star catalogs, and keeps working in shared links.
+function searchAsteroid(name, title) {
+  return search(`asteroid:${name}`, { label: title || name, name: title || name });
+}
+
 function fovFor(t, override) {
   if (override) return override;
   if (t.path?.length > 1) {
@@ -458,8 +476,15 @@ function fovFor(t, override) {
     const spread = Math.max(spreadRa * Math.cos((t.dec * Math.PI) / 180), Math.max(...decs) - Math.min(...decs));
     return Math.min(120, Math.max(3, spread * 1.4));
   }
-  return 0.6;
+  return FOV_BY_TYPE[t.otype] || 0.6;
 }
+
+// Starting zoom (degrees) for things much bigger than a star: a star association spans
+// ten degrees or more, a molecular cloud several.
+const FOV_BY_TYPE = {
+  "As*": 14, "MoC": 4, "SFR": 3, "DNe": 1.5, "Cl*": 1.2, "OpC": 1.5, "GlC": 0.5,
+  "HII": 1.2, "RNe": 0.8, "SNR": 1.5, "ISM": 2, "GrG": 1, "ClG": 1, "SCG": 4,
+};
 
 // Put an object in the inspector and mark it on the map. `fly: false` (a click on the map)
 // leaves the camera where the user put it.
@@ -479,7 +504,9 @@ function showTarget(t, fovOverride, { fly = true } = {}) {
 
   renderInfo(t);
   // A planet or asteroid is not at one place in the sky, so its time-lapse waits for a click.
-  timelapse.show(t, { auto: !t.moving });
+  timelapse.show({ ...t, det: t.det || featuredMatch(t)?.det }, { auto: !t.moving });
+  followCat.removeAll();
+  follow.show(t); // asteroids and comets: follow them through the exposures that caught them
   if (fly) {
     const fov = fovFor(t, fovOverride);
     // Start fetching the destination's tiles now; the flight there takes a few seconds anyway.
@@ -538,8 +565,28 @@ function angularDistance(ra1, dec1, ra2, dec2) {
 function openInspector(open) {
   $("#info").hidden = !open;
   document.body.classList.toggle("has-panel", open);
-  if (!open) timelapse.clear(); // stops playback and any download in progress
+  if (!open) { timelapse.clear(); follow.clear(); followCat.removeAll(); } // stops playback and any download in progress
 }
+
+// First letter of an asteroid's spectral class -> what its surface is like.
+const SURFACE_TYPES = {
+  C: "dark, carbon-rich", B: "dark, carbon-rich", F: "dark, carbon-rich", G: "dark, carbon-rich",
+  S: "stony", Q: "fresh stony", K: "stony", L: "stony", A: "olivine-rich", V: "basalt, like Vesta's crust",
+  M: "metallic", X: "metal or dark rock", E: "bright, enstatite-rich", P: "very dark, primitive",
+  D: "very dark and red, primitive", T: "dark, primitive", R: "pyroxene-rich", O: "unusual stony",
+};
+
+// The featured target this is, if any: opened from its chip (same blurb), or found another way.
+function featuredMatch(t) {
+  return FEATURED.find((x) => t.blurb && x.blurb === t.blurb) || featuredFor(t);
+}
+
+// A featured target found some other way (typed in full, clicked on the map): match it by name.
+function featuredFor(t) {
+  const names = [t.name, ...(t.aliases || [])].map((n) => tidy(n));
+  return FEATURED.find((f) => [f.q, f.label, f.name, ...(f.also || [])].some((n) => n && names.includes(tidy(n))));
+}
+const tidy = (n) => String(n).replace(/^(NAME|V\*|\*)\s+/i, "").replace(/\s+/g, " ").trim().toLowerCase();
 
 function renderInfo(t) {
   openInspector(true);
@@ -548,6 +595,11 @@ function renderInfo(t) {
   $("#info-name").textContent = t.name;
   $("#info-type").textContent = t.type_label || "";
   $("#info-blurb").textContent = t.blurb || "";
+  // The challenge targets: what SPHEREx shows for each (checked against the data), however they were opened.
+  const f = featuredMatch(t);
+  if (f && !t.blurb) $("#info-blurb").textContent = f.blurb;
+  $("#info-watch").hidden = !f?.watch;
+  $("#info-watch").replaceChildren(...(f?.watch ? [el("strong", {}, "What to look for: "), document.createTextNode(f.watch)] : []));
 
   const facts = $("#info-facts");
   facts.replaceChildren();
@@ -563,6 +615,12 @@ function renderInfo(t) {
   }
   if (t.moving) add("Position for", `${t.position_date} UTC`);
   if (t.path?.length) add("Blue line", t.path_label);
+  const a = t.asteroid || {};
+  if (a.diameter_km) add("Size", a.diameter_km >= 1 ? `${a.diameter_km.toLocaleString(undefined, { maximumFractionDigits: 1 })} km across` : `${Math.round(a.diameter_km * 1000)} m across`);
+  if (a.hazard) add("Near Earth?", a.hazard);
+  if (a.spectral_type) add("Surface type", `${a.spectral_type} (${SURFACE_TYPES[a.spectral_type[0]] || "spectral class"})`);
+  if (a.rotation_hours) add("Spins once every", a.rotation_hours >= 48 ? `${(a.rotation_hours / 24).toFixed(1)} days` : `${a.rotation_hours.toFixed(1)} hours`);
+  if (a.albedo) add("Reflects", `${Math.round(a.albedo * 100)}% of sunlight`);
   add("Sky position", `RA ${t.ra.toFixed(4)}°, Dec ${t.dec.toFixed(4)}°`);
   if (t.aliases?.length) add("Also known as", t.aliases.filter((a) => !a.startsWith("NAME")).slice(0, 3).join(", "));
   add("Data from", t.source);
@@ -574,7 +632,7 @@ function renderInfo(t) {
 // those are down. `at` remembers where the last query was made so we only query again when
 // the view has really moved away from it. (The Names switch has its own module, names.js.)
 let clickedMarker = null; // the marker under a click; Aladin reports it just before the click itself
-const markerClicked = (source) => (clickedMarker = { ra: source.ra, dec: source.dec, at: performance.now() });
+const markerClicked = (source) => (clickedMarker = { ra: source.ra, dec: source.dec, data: source.data, at: performance.now() });
 const OVERLAYS = {
   gaia: {
     // Gaia lists over a billion stars: wider than maxFov they would only be a solid blob in the middle.
@@ -589,6 +647,28 @@ const OVERLAYS = {
       });
     },
     style: { name: "Gaia DR3", color: "#ffe08a", sourceSize: 8, shape: "cross" },
+  },
+  asteroids: {
+    // Wider than maxFov the 1° search circle is a clump of diamonds in the middle: hide it (like Gaia).
+    toggle: "#tg-asteroids", label: "Asteroids", maxRadius: 1, maxFov: 20, cat: null, at: null, request: null,
+    service: "the asteroid service (IMCCE SkyBoT)",
+    // Positions for right now: the all-sky map is many dates stacked together, and an asteroid
+    // crosses a SPHEREx field in hours, so "now" is the one date that means something here.
+    // Zoomed far out, the 1° search circle is a dot on the screen: only its brightest few, unlabelled.
+    url: (ra, dec, radius, fov) => `${API}/api/asteroids?ra=${ra}&dec=${dec}&radius=${radius}&limit=${fov > 6 ? 12 : 60}`,
+    labelsBelowFov: 6,
+    rows: (data) => {
+      if (!data.asteroids.length) toast("No known asteroids in this part of the sky right now. Try near the ecliptic (Jupiter, Ceres…).", 4000);
+      // The object open in the panel already has its own label: don't name it twice.
+      const isOpen = (a) => current?.moving && angularDistance(a.ra, a.dec, current.ra, current.dec) < 10 / 3600;
+      return data.asteroids.filter((a) => !isOpen(a)).map((a) => [a.ra, a.dec, {
+        name: a.label, type: a.family, mag: a.vmag, asteroid: a.name, title: a.label,
+      }]);
+    },
+    style: {
+      name: "Asteroids (SkyBoT)", color: "#c4a7ff", sourceSize: 11, shape: "rhomb",
+      displayLabel: true, labelColumn: "name", labelColor: "#e6dcff", labelFont: "12px Inter, sans-serif",
+    },
   },
 };
 
@@ -620,23 +700,37 @@ async function refreshOverlay(key, where) {
     return;
   }
   const radius = Math.min(o.maxRadius, where.fov / 2);
-  o.at = { ra: where.ra, dec: where.dec, radius };
+  o.at = { ra: where.ra, dec: where.dec, radius, fov: where.fov };
   const request = (o.request = new AbortController());
   try {
-    const r = await fetch(o.url(where.ra.toFixed(5), where.dec.toFixed(5), radius.toFixed(4)), { signal: request.signal });
+    const r = await fetch(o.url(where.ra.toFixed(5), where.dec.toFixed(5), radius.toFixed(4), where.fov), { signal: request.signal });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const rows = o.rows(await r.json());
     if (o.request !== request) return; // switched off, or a newer query took over
     // A click on a marker inspects that exact object (see the click handler in wireControls).
-    const cat = A.catalog({ ...o.style, onClick: markerClicked });
+    const labels = o.style.displayLabel && !(o.labelsBelowFov && where.fov > o.labelsBelowFov);
+    const cat = A.catalog({ ...o.style, displayLabel: labels, onClick: markerClicked });
     cat.addSources(rows.map(([ra, dec, data]) => A.source(ra, dec, data)));
     removeCatalog(o.cat); // the old markers stayed until now, so they don't blink
     aladin.addCatalog(cat);
     o.cat = cat;
   } catch (e) {
     if (e.name === "AbortError" || o.request !== request) return;
-    toast(`${o.label} couldn't be loaded: the star catalog didn't answer. Switch it off and on to try again.`, 5000);
+    toast(`${o.label} couldn't be loaded: ${o.service || "the star catalog"} didn't answer. Switch it off and on to try again.`, 5000);
   }
+}
+
+// The asteroid marker under a click (screen pixels), if any. Checked here rather than through
+// Aladin's marker callback so a click on a diamond always opens that asteroid.
+function asteroidAt(x, y) {
+  let best = null, bestD = 14; // px: a little more than the marker, easy to hit on a phone too
+  for (const s of OVERLAYS.asteroids.cat?.sources || []) {
+    const p = aladin.world2pix(s.ra, s.dec);
+    if (!p) continue;
+    const d = Math.hypot(p[0] - x, p[1] - y);
+    if (d < bestD) [best, bestD] = [s, d];
+  }
+  return best && { ra: best.ra, dec: best.dec, data: best.data };
 }
 
 function clearOverlay(key) {
@@ -655,7 +749,8 @@ function refreshOverlaysIfMoved() {
     if (!$(o.toggle).checked || !o.at) continue;
     const radius = Math.min(o.maxRadius, fov / 2);
     const moved = angularDistance(ra, dec, o.at.ra, o.at.dec) > o.at.radius * 0.5;
-    const rescaled = radius > o.at.radius * 1.5 || radius < o.at.radius / 2;
+    const rescaled = radius > o.at.radius * 1.5 || radius < o.at.radius / 2
+      || (o.labelsBelowFov && (fov > o.labelsBelowFov) !== (o.at.fov > o.labelsBelowFov)); // labels on/off
     const tooWide = fov > o.maxFov && o.cat; // zoomed out past the point where its markers make sense
     if (moved || rescaled || tooWide) refreshOverlay(key, { ra, dec, fov });
   }
@@ -757,6 +852,42 @@ function renderSuggestions(text) {
     ul.prepend(li);
   }
   ul.hidden = !ul.children.length;
+  suggestNames(text.trim());
+}
+
+// Names as you type: SIMBAD's named objects (Upper Sco Association, Orion Nebula, Barnard's
+// Loop…) and asteroids / comets, looked up by the backend. Added under the featured matches
+// once they arrive; answers are remembered so typing back and forth is instant.
+let suggestTimer, suggestTicket = 0;
+const suggestions = new Map();
+function suggestNames(q) {
+  clearTimeout(suggestTimer);
+  const ticket = ++suggestTicket;
+  if (q.length < 2 || /^[\d\s.:+\-hdms°'"]+$/i.test(q)) return; // too short, or coordinates
+  const show = (items) => {
+    const ul = $("#suggestions");
+    if (ticket !== suggestTicket || document.activeElement !== $("#search-input")) return;
+    ul.querySelectorAll("li.found").forEach((li) => li.remove());
+    const featured = new Set([...ul.querySelectorAll("li span")].map((s) => s.textContent.toLowerCase()));
+    items.filter((it) => !featured.has(it.label.toLowerCase())).forEach((it) => {
+      const li = el("li", { className: "found" });
+      li.append(el("span", {}, it.label), el("small", {}, [it.kind, it.also && `= ${it.also}`].filter(Boolean).join(" · ")));
+      li.onmousedown = (e) => { e.preventDefault(); search(it.query, { label: it.label, name: it.label }); };
+      ul.append(li);
+    });
+    ul.hidden = !ul.children.length;
+  };
+  const key = q.toLowerCase();
+  if (suggestions.has(key)) return show(suggestions.get(key));
+  suggestTimer = setTimeout(async () => {
+    try {
+      const r = await fetch(`${API}/api/suggest?q=${encodeURIComponent(q)}`);
+      if (!r.ok) return;
+      const items = (await r.json()).items;
+      suggestions.set(key, items);
+      show(items);
+    } catch {}
+  }, 200);
 }
 
 function wireControls() {
@@ -794,8 +925,9 @@ function wireControls() {
     const marker = clickedMarker && performance.now() - clickedMarker.at < 300 ? clickedMarker : null;
     clickedMarker = null;
     if (e.isDragging) return;
-    const named = marker || names.at(e.x, e.y);
-    if (named) inspectAt(named.ra, named.dec, 5); // a name or a Gaia marker: that object, not its neighbour
+    const named = marker || asteroidAt(e.x, e.y) || names.at(e.x, e.y);
+    if (named?.data?.asteroid) searchAsteroid(named.data.asteroid, named.data.title); // an asteroid: look it up by name (orbit, path, size)
+    else if (named) inspectAt(named.ra, named.dec, 5); // a name or a Gaia marker: that object, not its neighbour
     else if (Number.isFinite(e.ra) && Number.isFinite(e.dec)) inspectAt(e.ra, e.dec);
   });
   $("#act-zoom").addEventListener("click", () => current && aladin.zoomToFoV(Math.max(0.15, aladin.getFov()[0] / 3), 1.2));
@@ -869,6 +1001,13 @@ targetCatalog = A.catalog({
 aladin.addCatalog(targetCatalog);
 
 timelapse = createTimelapse({ api: API, colormap: () => colormap });
+// While "Follow it" plays, a marker on the map shows where the object was in the current frame.
+followCat = A.catalog({ name: "Following", color: "#7dd3fc", sourceSize: 18, shape: "plus" });
+aladin.addCatalog(followCat);
+follow = createFollow({
+  api: API, colormap: () => colormap,
+  onFrame: (f) => { followCat.removeAll(); followCat.addSources([A.source(f.ra, f.dec, { name: f.date })]); },
+});
 names = createNames({
   api: API, aladin, target: () => (document.body.classList.contains("has-panel") ? current : null),
   avoid: ".brand, .search, .dock, .welcome, .inspector, .toast",
