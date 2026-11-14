@@ -3,7 +3,6 @@ services:
   - type: web
     name: lumasphere
     runtime: docker
-    rootDir: owais-work
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
     envVars:

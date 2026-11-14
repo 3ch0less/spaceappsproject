@@ -3,7 +3,5 @@
 **/*.pyc
 **/.cache
 **/.DS_Store
-resources
-serve-public.sh
 *.png
 !frontend/**/*.png

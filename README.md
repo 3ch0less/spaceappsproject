@@ -29,7 +29,7 @@ them too. A time-lapse takes about 8 seconds the first time and is instant after
 
 ## Deploy it
 
-Everything (API, sky-tile proxy, frontend) is one container. From `owais-work/`:
+Everything (API, sky-tile proxy, frontend) is one container:
 
 ```bash
 docker build -t lumasphere .
@@ -37,7 +37,7 @@ docker run -p 8000:8000 -v lumasphere-cache:/data lumasphere
 ```
 
 - **Render:** New → Blueprint → this repo (uses `render.yaml` at the repo root). **Fly.io / Railway /
-  Cloud Run / any Docker host:** point it at `owais-work/Dockerfile`; it listens on `$PORT` (default 8000).
+  Cloud Run / any Docker host:** point it at the `Dockerfile`; it listens on `$PORT` (default 8000).
 - Health check: `GET /api/health`.
 - Mount a volume at `/data` to keep the cache across restarts; without one it starts empty and fills as
   people look around (first views of a patch are slower). Size it with `LUMASPHERE_CACHE_GB` (default 5).
