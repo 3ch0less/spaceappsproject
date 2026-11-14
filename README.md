@@ -29,7 +29,7 @@ them too. A time-lapse takes about 8 seconds the first time and is instant after
 
 ## Using the time-lapse
 
-- **Open it:** search for something, click a featured chip, or click anywhere on the map. Clicking does not move the
+- **Open it:** search for something, pick a target from the list, or click anywhere on the map. Clicking does not move the
   camera; dragging does not select.
 - **Flipbook:** plays by itself. Each frame is one SPHEREx visit (about six months apart), with its date, visit number
   and exposure count. The arrow keys step, space plays and pauses. North is up, east is left.
@@ -59,8 +59,9 @@ What to expect from the challenge's test targets:
 
 ```
 frontend/ (plain HTML/CSS/JS, no build step)
-  index.html    layout
-  style.css     look & feel, including the phone layout
+  index.html    layout, and the icons (Lucide, inlined as SVG symbols)
+  style.css     look & feel, including the phone layout (colours and sizes are the variables at the top)
+  fonts/        Archivo, the one typeface, served from here so nothing depends on a font CDN
   app.js        sky viewer (Aladin Lite v3), search, map clicks, wavelength slider, Gaia overlay, shareable URLs
   names.js      object names on the map: more of them the closer you zoom, never overlapping
   timelapse.js  the flipbook, its timeline and the spectrum chart in the side panel
@@ -103,7 +104,7 @@ backend/ (Python FastAPI)
 - SPHEREx pixels are 6.15″, so the frames are soft. A 3′ patch is about 30 detector pixels across.
 
 **Sky map**
-- **Fast stars are moved to where SPHEREx saw them.** SIMBAD positions are for the year 2000. Barnard's Star has moved 4.5 arcminutes since then, so the backend applies proper motion to the survey mid-point (2025.8). The yellow ring shows the year-2000 position. The Names and Gaia markers are moved the same way.
+- **Fast stars are moved to where SPHEREx saw them.** SIMBAD positions are for the year 2000. Barnard's Star has moved 4.5 arcminutes since then, so the backend applies proper motion to the survey mid-point (2025.8). The pale ring shows the year-2000 position, the red ring where SPHEREx saw it (the panel's "On the map" key draws both). The Names and Gaia markers are moved the same way.
 - **One HiPS per wavelength, not Aladin's cube mode.** Aladin Lite 3.8.2 can open the cube directly, but its cube
   renderer re-downloads every visible tile twice a second, has no low-resolution fallback while tiles load (the sky
   went black on zoom) and picks the wrong frame for a slice number. So `tiles.py` exposes frame *k* as an ordinary
@@ -133,7 +134,7 @@ backend/ (Python FastAPI)
 - **Names work like place names on a street map.** Far out you see a few famous objects spread over the view
   (M 42, M 31, the LMC); each zoom step brings in the next tier; at the closest zoom everything catalogued is
   there. Two labels never overlap: the better-known one is written and the other shows as a small dot until
-  zooming in makes room. Markers sit exactly on their objects, and no label hides under the search bar or the dock.
+  zooming in makes room. Markers sit exactly on their objects, and no label hides under the header, the wavelength rail or a panel.
 - **How:** the sky is cut into a grid per zoom level (12 cells of 60° at level 0, each level halves the cell, down
   to 3.5′ at level 10), and a cell holds its best-known objects by number of papers in SIMBAD. A view needs about
   ten cells. Cells are cached in the page, by the browser and in `backend/.cache/names/` (30 days), so panning
@@ -153,7 +154,7 @@ backend/ (Python FastAPI)
 
 ## Test targets (from the challenge)
 Barnard's Star · Epsilon Indi B (`eps Ind B`) · WISE 0855 (`WISE J085510.83-071442.5`) · RW Aurigae · R Draconis.
-All of them are one-click chips on the welcome card.
+All of them are one click away in the target list on the first screen.
 
 ## Tested on
 Chrome (Apple GPU), WebKit (Safari's engine) and software-rendered Chromium, driven by scripts; phone layout at

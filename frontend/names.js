@@ -23,9 +23,9 @@ const CELLS_ACROSS = 3;        // a cell is about a third of the view's longer s
 const MAX_CELLS = 48;          // never ask for more cells than this for one view
 const KEEP_CELLS = 600;        // cells remembered in the page
 const RETRY_MS = 20000;        // a cell that failed to load is tried again after this
-const FONT = '500 12px Inter, system-ui, sans-serif';
-const FONT_BIG = '600 13px Inter, system-ui, sans-serif';   // the best-known few of the view
-const TARGET_FONT = '600 14px Inter, sans-serif';           // how app.js labels the selected object
+const FONT = '500 12px Archivo, system-ui, sans-serif';
+const FONT_BIG = '600 13px Archivo, system-ui, sans-serif';   // the best-known few of the view
+const TARGET_FONT = '600 13px Archivo, sans-serif';           // the selected object's tag (.target-tag in style.css)
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 
 // ---------------------------------------------------------------- the grid
@@ -208,7 +208,7 @@ export function createNames({ api, aladin, target, avoid = "", onError }) {
     const taken = (b) => eachBin(b, (k) => bins.get(k)?.some((o) => b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1]));
 
     for (const area of covered) take(area); // no names under the search bar, the dock or a panel
-    // The selected object has its own, bigger label (drawn by app.js): keep clear of it.
+    // The selected object has its own tag (placed by app.js): keep clear of it.
     const t = target();
     let tx = NaN, ty = NaN;
     if (t) {
@@ -216,7 +216,7 @@ export function createNames({ api, aladin, target, avoid = "", onError }) {
       if (p) {
         [tx, ty] = p;
         take([tx - 16, ty - 16, tx + 16, ty + 16]);
-        take([tx + 13, ty - 15, tx + 17 + textWidth(t.name || "", TARGET_FONT), ty + 6]);
+        take([tx + 16, ty - 13, tx + 34 + textWidth(t.name || "", TARGET_FONT), ty + 13]);
       }
     }
 
@@ -248,7 +248,7 @@ export function createNames({ api, aladin, target, avoid = "", onError }) {
     }
 
     // Unnamed dots: there is something here, zoom in to read it. Not under somebody's label.
-    ctx.fillStyle = "rgba(163, 240, 198, 0.55)";
+    ctx.fillStyle = "rgba(201, 214, 236, 0.6)";
     ctx.beginPath();
     for (const d of dots) {
       if (taken([d.x - 2, d.y - 2, d.x + 2, d.y + 2])) continue;
@@ -259,8 +259,8 @@ export function createNames({ api, aladin, target, avoid = "", onError }) {
     ctx.fill();
 
     // Markers, then the text with a dark edge so it reads on bright and dark sky alike.
-    ctx.fillStyle = "#a3f0c6";
-    ctx.strokeStyle = "rgba(4, 6, 13, 0.85)";
+    ctx.fillStyle = "#c9d6ec"; // the pale blue of catalogued things (--mark-ghost)
+    ctx.strokeStyle = "rgba(3, 6, 15, 0.85)";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     for (const l of labels) { ctx.moveTo(l.x + 3, l.y); ctx.arc(l.x, l.y, 3, 0, 6.2832); }
@@ -271,7 +271,7 @@ export function createNames({ api, aladin, target, avoid = "", onError }) {
     ctx.lineWidth = 3;
     for (const big of [true, false]) {
       ctx.font = big ? FONT_BIG : FONT;
-      ctx.fillStyle = big ? "#ffffff" : "#d6ffe9";
+      ctx.fillStyle = big ? "#ffffff" : "#dce6f7";
       for (const l of labels) {
         if (l.big !== big) continue;
         const x = l.box[0] + 4, y = (l.box[1] + l.box[3]) / 2;

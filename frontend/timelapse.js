@@ -24,24 +24,34 @@ const svg = (tag, attrs = {}, text) => {
   return n;
 };
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+// Swap the icon inside a button (the icons are the <symbol>s at the top of index.html).
+const setIcon = (button, name) => button.querySelector("use").setAttribute("href", `#i-${name}`);
 const MJD_UNIX = 40587; // MJD of 1970-01-01
 const mjdToDate = (mjd) => new Date((mjd - MJD_UNIX) * 86400000);
-const fmtDate = (mjd, opts = { day: "numeric", month: "short", year: "numeric" }) =>
-  mjdToDate(mjd).toLocaleDateString("en-GB", { ...opts, timeZone: "UTC" });
+// Dates are written one way everywhere: 26 Aug 2025, with three-letter months whatever the
+// browser's locale would make of them. `opts` says which parts to include.
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const fmtDate = (mjd, opts = { day: "numeric", month: "short", year: "numeric" }) => {
+  const d = mjdToDate(mjd);
+  return [opts.day && d.getUTCDate(), opts.month && MONTHS[d.getUTCMonth()], opts.year && d.getUTCFullYear()].filter(Boolean).join(" ");
+};
 const mjdToYear = (mjd) => 2000 + (mjd - 51544.5) / 365.25;
 
 // SPHEREx's six detectors, short to long wavelength.
 const DETECTORS = [
-  { id: 1, range: "0.75–1.1 µm" }, { id: 2, range: "1.1–1.6 µm" }, { id: 3, range: "1.6–2.4 µm" },
-  { id: 4, range: "2.4–3.8 µm" }, { id: 5, range: "3.8–4.4 µm" }, { id: 6, range: "4.4–5.0 µm" },
+  { id: 1, range: "0.75–1.1 µm", lo: 0.75, hi: 1.1 }, { id: 2, range: "1.1–1.6 µm", lo: 1.1, hi: 1.6 }, { id: 3, range: "1.6–2.4 µm", lo: 1.6, hi: 2.4 },
+  { id: 4, range: "2.4–3.8 µm", lo: 2.4, hi: 3.8 }, { id: 5, range: "3.8–4.4 µm", lo: 3.8, hi: 4.4 }, { id: 6, range: "4.4–5.0 µm", lo: 4.4, hi: 5.0 },
 ];
 const FOVS = [3, 6, 12, 20]; // arcminutes, must match the backend
 
-// One colour per visit, in this fixed order (validated for colour-blind separation on the
-// panel background; from the 4th on they also get a dash pattern, since hue alone is not enough).
-const VISIT_COLORS = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#9085e9", "#e66767", "#008300"];
+// One colour per visit, in this fixed order. No red or orange: in this interface red means
+// "you can press this" or "this is live". Validated on the chart's background (#050e22): the
+// first three tell apart under colour-blindness in any pairing, neighbours in the list always
+// do, and from the 4th on a visit also gets a dash pattern, since hue alone is not enough.
+// Past the 6th, visits share a grey and differ by dash only.
+const VISIT_COLORS = ["#3987e5", "#199e70", "#c98500", "#d55181", "#9085e9", "#008300"];
 const VISIT_DASH = ["", "", "", "5 3", "2 3", "8 3 2 3", "1 3", "6 2"];
-const visitColor = (i) => VISIT_COLORS[i] || "#8a93b5";
+const visitColor = (i) => VISIT_COLORS[i] || "#8ca0c4";
 
 // Colour tables for the images, matching the map's "colour style" choices.
 const STOPS = {
@@ -232,12 +242,12 @@ export function createTimelapse({ api, colormap }) {
 
   function drawOverlays(d, v, size) {
     const t = state.target, year = mjdToYear(v.mjd), arcsecPerPx = (d.scale_arcsec * d.size) / size;
-    ctx.lineCap = "round";
+    ctx.lineCap = "butt";
 
     if (ui.gaia.checked && state.gaia) {
       // Each Gaia star is drawn where its measured motion puts it on this visit's date.
       const cosd = Math.cos((t.dec * Math.PI) / 180), dt = year - state.gaia.epoch;
-      ctx.strokeStyle = "rgba(255, 224, 138, 0.9)"; ctx.lineWidth = 1.2;
+      ctx.strokeStyle = "rgba(255, 197, 49, 0.9)"; ctx.lineWidth = 1.2; // Gaia gold, as on the map
       for (const s of state.gaia.stars) {
         const east = (s.ra - t.ra) * 3600 * cosd + ((s.pmra || 0) * dt) / 1000;
         const north = (s.dec - t.dec) * 3600 + ((s.pmdec || 0) * dt) / 1000;
@@ -255,10 +265,12 @@ export function createTimelapse({ api, colormap }) {
         north = (t.pm_dec_mas_yr * (year - t.epoch)) / 1000;
       }
       const [x, y] = toCanvas(d, size, east, north), gap = 11, len = 9;
-      ctx.strokeStyle = "#7dd3fc"; ctx.lineWidth = 2;
+      ctx.lineCap = "butt";
       ctx.beginPath();
       for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { ctx.moveTo(x + dx * gap, y + dy * gap); ctx.lineTo(x + dx * (gap + len), y + dy * (gap + len)); }
-      ctx.stroke();
+      // Red like the object's ring on the map, over a dark edge so it shows on a bright star's glow too.
+      ctx.strokeStyle = "rgba(3, 6, 15, 0.7)"; ctx.lineWidth = 4.5; ctx.stroke();
+      ctx.strokeStyle = "#fc3d21"; ctx.lineWidth = 2; ctx.stroke();
     }
 
     // Scale bar (bottom right) and compass (bottom left).
@@ -266,7 +278,7 @@ export function createTimelapse({ api, colormap }) {
     const barPx = barArcsec / arcsecPerPx, bx = size - 14 - barPx, by = size - 16;
     ctx.strokeStyle = ctx.fillStyle = "rgba(255,255,255,0.92)"; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + barPx, by); ctx.stroke();
-    ctx.font = "600 11px Inter, system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+    ctx.font = "600 11px Archivo, system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "bottom";
     ctx.fillText(barArcsec >= 60 ? `${barArcsec / 60}′` : `${barArcsec}″`, bx + barPx / 2, by - 4);
     const cx = 40, cy = size - 20;
     ctx.lineWidth = 1.5;
@@ -307,7 +319,9 @@ export function createTimelapse({ api, colormap }) {
     const { d, v, ref } = f, i = d.visits.indexOf(v) + 1;
     ui.hud.replaceChildren(
       el("strong", {}, ref ? `${fmtDate(v.mjd, { month: "short", year: "numeric" })} minus ${fmtDate(ref.mjd, { month: "short", year: "numeric" })}` : fmtDate(v.mjd)),
-      el("span", {}, `visit ${i} of ${d.visits.length} · ${v.n} exposure${v.n === 1 ? "" : "s"}${v.n < 3 ? " · noisy" : ""}`));
+      el("span", {}, `Visit ${i} of ${d.visits.length}`),
+      el("span", {}, `${v.n} exposure${v.n === 1 ? "" : "s"}`));
+    if (v.n < 3) ui.hud.append(el("span", { className: "flag", title: "Fewer than three exposures: this frame is noisy" }, "Noisy"));
   }
 
   function renderDetectors() {
@@ -343,7 +357,7 @@ export function createTimelapse({ api, colormap }) {
       const mjd = cursor.getTime() / 86400000 + MJD_UNIX, m = cursor.getUTCMonth(), major = m % every === 0;
       root.append(svg("line", { x1: x(mjd), x2: x(mjd), y1: axisY, y2: axisY + (major ? 5 : 3), class: "tl-axis" }));
       if (major) root.append(svg("text", { x: x(mjd), y: axisY + 17, class: "tl-tick" + (m === 0 ? " year" : "") },
-        m === 0 ? String(cursor.getUTCFullYear()) : cursor.toLocaleDateString("en-GB", { month: "short", timeZone: "UTC" })));
+        m === 0 ? String(cursor.getUTCFullYear()) : MONTHS[m]));
     }
 
     for (const mjd of plan.times?.[state.det] || []) root.append(svg("line", { x1: x(mjd), x2: x(mjd), y1: axisY - 9, y2: axisY - 1, class: "tl-exp" }));
@@ -354,8 +368,9 @@ export function createTimelapse({ api, colormap }) {
       const xa = x(pv.mjd_start), xb = x(pv.mjd_end), w = Math.max(14, xb - xa), cx = (xa + xb) / 2;
       const g = svg("g", { class: "tl-visit" + (active ? " on" : "") + (has ? "" : " empty"), tabindex: has ? 0 : -1, role: "button",
         "aria-label": `Visit ${pv.id + 1}: ${pv.date_start} to ${pv.date_end}` });
-      g.append(svg("rect", { x: cx - w / 2, y: axisY - 13, width: w, height: 16, rx: 5 }));
-      g.append(svg("circle", { cx, cy: 9, r: active ? 5.5 : 4 }));
+      g.append(svg("rect", { x: Math.round(cx - w / 2) + 0.5, y: axisY - 13.5, width: Math.round(w), height: 16, class: "band" }));
+      const pin = active ? 9 : 7;
+      g.append(svg("rect", { x: cx - pin / 2, y: 9 - pin / 2, width: pin, height: pin, class: "pin" }));
       if (has) {
         g.addEventListener("click", () => { setPlaying(false); state.visit = idx; render(); });
         g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); g.dispatchEvent(new Event("click")); } });
@@ -389,7 +404,7 @@ export function createTimelapse({ api, colormap }) {
     renderStatus(); renderHud(); renderDetectors(); renderTrack(); renderSub(); drawFrame(); renderSpectrum();
     const d = state.data[state.det], many = !!d && d.visits.length > 1;
     ui.play.disabled = ui.prev.disabled = ui.next.disabled = !many;
-    ui.play.textContent = state.playing ? "❚❚" : "▶";
+    setIcon(ui.play, state.playing ? "pause" : "play");
     ui.play.setAttribute("aria-label", state.playing ? "Pause" : "Play");
   }
 
@@ -404,7 +419,7 @@ export function createTimelapse({ api, colormap }) {
     clearInterval(state.timer);
     state.playing = on;
     if (on) state.timer = setInterval(() => step(1), +ui.speed.value);
-    ui.play.textContent = on ? "❚❚" : "▶";
+    setIcon(ui.play, on ? "pause" : "play");
     ui.play.setAttribute("aria-label", on ? "Pause" : "Play");
   }
 
@@ -454,7 +469,7 @@ export function createTimelapse({ api, colormap }) {
     const { list, measured, total } = spectrumData();
     const loaded = Object.keys(state.data).length, pending = Object.keys(state.loading).length;
     ui.specAll.hidden = loaded + pending >= 6 || !state.target || (!loaded && !pending);
-    ui.specAll.textContent = `Load the other ${6 - loaded - pending} detectors`;
+    ui.specAll.querySelector("span").textContent = `Load the other ${6 - loaded - pending} detectors`;
     ui.specTip.hidden = true;
     const order = (state.plan?.visits || []).map((v) => v.id);
     const colorOf = (id) => visitColor(Math.max(0, order.indexOf(id)));
@@ -473,23 +488,30 @@ export function createTimelapse({ api, colormap }) {
     }
 
     const W = ui.specChart.clientWidth || 380, H = 200, m = { l: 44, r: 10, t: 24, b: 30 };
-    const x0 = 0.7, x1 = 5.1, all = list.flatMap((v) => v.points);
+    const all = list.flatMap((v) => v.points);
+    // The plot spans the detectors that are loaded, so one detector's measurements fill its width
+    // instead of huddling in a corner of the full 0.75–5 µm range.
+    const dets = [...new Set(all.map((p) => p.det))].map((d) => DETECTORS[d - 1]);
+    const lo = Math.min(...dets.map((d) => d.lo), ...all.map((p) => p.wl)), hi = Math.max(...dets.map((d) => d.hi), ...all.map((p) => p.wl));
+    const x0 = lo - (hi - lo) * 0.04, x1 = hi + (hi - lo) * 0.04;
     const yMax = Math.max(...all.map((p) => p.flux)) * 1.12, yMin = Math.min(0, ...all.map((p) => p.flux));
     const X = (wl) => m.l + ((wl - x0) / (x1 - x0)) * (W - m.l - m.r);
     const Y = (f) => H - m.b - ((f - yMin) / (yMax - yMin || 1)) * (H - m.t - m.b);
     const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img",
       "aria-label": "Spectrum: brightness in millijansky against wavelength in microns, one line per visit" });
 
-    // Recessive grid: 4 horizontal lines with values, wavelength marks every micron.
+    // Recessive grid: 4 horizontal lines with values, and up to 8 wavelength marks.
     const stepRaw = (yMax - yMin) / 4, mag = 10 ** Math.floor(Math.log10(stepRaw)), yStep = [1, 2, 5, 10].map((k) => k * mag).find((s) => s >= stepRaw);
     const fmt = (v) => (Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2)).replace(/\.0+$/, "");
     for (let v = Math.ceil(yMin / yStep) * yStep; v <= yMax; v += yStep) {
       root.append(svg("line", { x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), class: v === 0 ? "sp-axis" : "sp-grid" }));
       root.append(svg("text", { x: m.l - 6, y: Y(v) + 3.5, class: "sp-label", "text-anchor": "end" }, fmt(v)));
     }
-    for (let wl = 1; wl <= 5; wl++) {
+    const xStep = [0.1, 0.2, 0.5, 1].find((s) => (x1 - x0) / s <= 8) || 1;
+    for (let k = Math.ceil(x0 / xStep - 1e-9); k * xStep <= x1 + 1e-9; k++) {
+      const wl = k * xStep;
       root.append(svg("line", { x1: X(wl), x2: X(wl), y1: H - m.b, y2: H - m.b + 4, class: "sp-axis" }));
-      root.append(svg("text", { x: X(wl), y: H - m.b + 16, class: "sp-label", "text-anchor": "middle" }, String(wl)));
+      root.append(svg("text", { x: X(wl), y: H - m.b + 16, class: "sp-label", "text-anchor": "middle" }, xStep < 1 ? wl.toFixed(1) : String(wl)));
     }
     root.append(svg("line", { x1: m.l, x2: W - m.r, y1: H - m.b, y2: H - m.b, class: "sp-axis" }));
     root.append(svg("text", { x: W - m.r, y: H - 2, class: "sp-label", "text-anchor": "end" }, "wavelength (µm)"));
@@ -530,8 +552,12 @@ export function createTimelapse({ api, colormap }) {
         return row;
       }));
       ui.specTip.hidden = false;
-      const left = clamp(X(near) + 12, 0, W - 170);
-      ui.specTip.style.left = `${X(near) > W * 0.6 ? Math.max(0, X(near) - 172) : left}px`;
+      const left = clamp(X(near) + 16, 0, W - 170);
+      ui.specTip.style.left = `${X(near) > W * 0.6 ? Math.max(0, X(near) - 176) : left}px`;
+      // Sit in the half of the plot the points are not in, so the box never covers what it describes.
+      const high = rows.reduce((sum, r) => sum + Y(r.p.flux), 0) / (rows.length || 1) < (m.t + H - m.b) / 2;
+      ui.specTip.style.top = high ? "auto" : "14px";
+      ui.specTip.style.bottom = high ? `${m.b + 12}px` : "auto";
     };
     root.addEventListener("pointermove", (e) => showAt(e.clientX));
     root.addEventListener("pointerleave", () => { hair.setAttribute("visibility", "hidden"); marks.replaceChildren(); ui.specTip.hidden = true; });
@@ -541,7 +567,7 @@ export function createTimelapse({ api, colormap }) {
     ui.specLegend.replaceChildren(...list.map((v) => {
       const item = el("span", { className: "sp-key" });
       const line = svg("svg", { width: 22, height: 8, "aria-hidden": "true" });
-      line.append(svg("line", { x1: 1, x2: 21, y1: 4, y2: 4, stroke: colorOf(v.id), "stroke-width": 2.5, "stroke-dasharray": dashOf(v.id), "stroke-linecap": "round" }));
+      line.append(svg("line", { x1: 1, x2: 21, y1: 4, y2: 4, stroke: colorOf(v.id), "stroke-width": 2.5, "stroke-dasharray": dashOf(v.id) }));
       item.append(line, document.createTextNode(fmtDate(v.mjd, { month: "short", year: "numeric" })));
       return item;
     }));

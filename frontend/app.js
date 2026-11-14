@@ -24,24 +24,25 @@ const SWEEP_MS = 160;           // fastest the wavelength sweep will step
 const DRIFT_DEG_PER_S = 1.8;    // slow auto-rotate on the welcome screen
 
 // The challenge's test targets plus a few crowd-pleasers.
+// `what` is the one-line description in the target list; `test` marks the challenge's own test targets.
 const FEATURED = [
-  { label: "Barnard's Star", q: "Barnard's Star", fov: 0.5,
+  { label: "Barnard's Star", q: "Barnard's Star", fov: 0.5, test: true, what: "Fastest-moving star",
     blurb: "The fastest-moving star in our sky, just 6 light-years away. It creeps about 10 arcseconds every year, enough to shift between SPHEREx's sky maps." },
-  { label: "Epsilon Indi B", q: "eps Ind B", fov: 0.5,
+  { label: "Epsilon Indi B", q: "eps Ind B", fov: 0.5, test: true, what: "Brown dwarf pair",
     blurb: "A pair of brown dwarfs orbiting the star Epsilon Indi, 12 light-years away. Brown dwarfs are too heavy to be planets and too light to be stars. They glow mostly in infrared." },
-  { label: "WISE 0855", q: "WISE J085510.83-071442.5", fov: 0.4, name: "WISE 0855−0714",
+  { label: "WISE 0855", q: "WISE J085510.83-071442.5", fov: 0.4, name: "WISE 0855−0714", test: true, what: "Coldest brown dwarf known",
     blurb: "The coldest brown dwarf known, about as cold as the North Pole. Invisible to the eye, it only shows up at the longest infrared wavelengths. Try sliding toward 4.5 µm." },
-  { label: "RW Aurigae", q: "RW Aur", fov: 0.5,
+  { label: "RW Aurigae", q: "RW Aur", fov: 0.5, test: true, what: "Young star that flickers",
     blurb: "A young star still wrapped in its birth disk. Clumps of dust passing in front of it make it brighten and fade unpredictably." },
-  { label: "R Draconis", q: "R Dra", fov: 0.5,
+  { label: "R Draconis", q: "R Dra", fov: 0.5, test: true, what: "Pulsating giant star",
     blurb: "A pulsating giant star that swells and shrinks, changing brightness on an eight-month cycle." },
-  { label: "Orion Nebula", q: "M42", fov: 2,
+  { label: "Orion Nebula", q: "M42", fov: 2, what: "Stellar nursery",
     blurb: "A stellar nursery 1,300 light-years away. Infrared light shines through its dust to reveal the newborn stars inside." },
-  { label: "Andromeda Galaxy", q: "M31", fov: 4,
-    blurb: "Our neighbour galaxy, 2.5 million light-years away, with about a trillion stars." },
-  { label: "Jupiter", q: "Jupiter",
+  { label: "Andromeda Galaxy", q: "M31", fov: 4, what: "Neighbor galaxy",
+    blurb: "Our neighbor galaxy, 2.5 million light-years away, with about a trillion stars." },
+  { label: "Jupiter", q: "Jupiter", what: "Planet on the move",
     blurb: "Planets wander against the stars. The line shows where Jupiter travelled while SPHEREx was mapping the sky." },
-  { label: "Ceres", q: "Ceres",
+  { label: "Ceres", q: "Ceres", what: "Dwarf planet",
     blurb: "The largest object in the asteroid belt, a dwarf planet 940 km across." },
 ];
 
@@ -53,6 +54,20 @@ const el = (tag, attrs = {}, text) => {
   if (text != null) n.textContent = text;
   return n;
 };
+const svg = (tag, attrs = {}, text) => {
+  const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  if (text != null) n.textContent = text;
+  return n;
+};
+// Swap the icon inside a button (the icons are the <symbol>s at the top of index.html).
+const setIcon = (button, name) => button.querySelector("use").setAttribute("href", `#i-${name}`);
+// Dates are written one way everywhere: 14 Nov 2026. This turns JPL Horizons' "2026-Nov-14" and
+// plain "2026-11-14" inside any text into that.
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const plainDates = (text) => String(text ?? "")
+  .replace(/\b(\d{4})-([A-Z][a-z]{2})-(\d{2})\b/g, (_, y, m, d) => `${+d} ${m} ${y}`)
+  .replace(/\b(\d{4})-(\d{2})-(\d{2})\b/g, (_, y, m, d) => `${+d} ${MONTHS[m - 1]} ${y}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 let toastTimer;
@@ -72,6 +87,9 @@ let blankFrames = new Set();
 let tileBase = "";        // absolute URL of the tile tree; frame k lives at `${tileBase}/${k}`
 let frame = 0;            // the wavelength frame the UI is asking for
 let colormap = "magma";
+// Marks on the map, one fixed meaning each (the inspector's "On the map" key draws the same ones;
+// keep in sync with --nasa-red, --mark-ghost, --mark-path and --mark-gaia in style.css).
+const MARK = { target: "#fc3d21", catalog: "#c9d6ec", path: "#7db3ff", gaia: "#ffc531" };
 let targetOverlay, targetCatalog;
 let timelapse;            // the flipbook + spectrum in the inspector (timelapse.js)
 let names;                // object labels on the map (names.js)
@@ -83,30 +101,48 @@ const urlParams = new URLSearchParams(location.search);
 const hasUrlState = [...urlParams.keys()].length > 0; // (URLSearchParams.size is missing in older Safari)
 
 // ------------------------------------------------------------------ boot
-// Any crash shows up on screen instead of leaving a silent black page.
-window.addEventListener("error", (e) => showFatal(e.error || e.message, true));
-window.addEventListener("unhandledrejection", (e) => showFatal(e.reason, true));
+// A crash while the page is starting shows up on screen instead of leaving a silent black page.
+// Once the sky is up, an uncaught error somewhere is not a reason to cover a working map with
+// an error box: it goes to the console. (The things that really stop the sky, such as the
+// backend or the tiles not answering or the graphics driver resetting, call showFatal themselves.)
+let booted = false;
+window.addEventListener("error", (e) => uncaught(e.error || e.message));
+window.addEventListener("unhandledrejection", (e) => uncaught(e.reason));
 
-function showFatal(err, soft = false) {
+function uncaught(err) {
+  const msg = String(err?.message || err || "");
+  // Harmless whenever they happen:
+  //  - "Script error." is all a browser says about an error in a script from another site
+  //    (a browser extension, or the viewer library's own helpers). There is nothing to act on.
+  //  - a background request that didn't get through (Aladin's usage logger, a catalog service
+  //    being down) and a wavelength layer that failed to load (handled in swapLayers). Each
+  //    browser words a failed request differently: Chrome "Failed to fetch", Safari
+  //    "Load failed", Firefox "NetworkError when attempting to fetch resource".
+  if (!msg || /^Script error\.?$|Failed to fetch|Load failed|NetworkError|AladinLiteLogger|^HiPS .* error|ResizeObserver loop/i.test(msg)) return;
+  if (booted) return console.error("SkyShift: uncaught error (the page keeps running)", err);
+  showFatal(err);
+}
+
+function showFatal(err) {
   const msg = String(err?.message || err || "Unknown error");
-  // Harmless: a background request that didn't get through (Aladin's usage logger, a catalog
-  // service being down) and a wavelength layer that failed to load (handled in swapLayers).
-  // Each browser words a failed request differently: Chrome "Failed to fetch", Safari
-  // "Load failed", Firefox "NetworkError when attempting to fetch resource".
-  if (soft && /Failed to fetch|Load failed|NetworkError|AladinLiteLogger|^HiPS .* error/i.test(msg)) return;
   console.error(err);
-  let help = "Try a hard refresh (Ctrl+Shift+R). If it keeps happening, open the browser console (F12) and send the error to the team.";
+  let command = "";
+  let help = "Reload the page. If it keeps happening, open the browser console (F12) and send the error below to the team.";
   if (/webgl/i.test(msg)) {
     help = "This sky viewer needs WebGL2 (3D graphics). In Chrome go to Settings → System, turn on “Use graphics acceleration when available”, relaunch, then check chrome://gpu shows WebGL2 as “Hardware accelerated”.";
   } else if (/backend/i.test(msg)) {
-    help = "The SkyShift backend isn't answering. Start it from the backend/ folder with “uvicorn main:app --port 8000”, then reload this page.";
+    help = "The SkyShift backend isn't answering. Start it from the backend/ folder with the command below, then reload this page.";
+    command = "uvicorn main:app --port 8000";
   } else if (/import|module|dynamically/i.test(msg)) {
     help = "The sky viewer library couldn't be downloaded from cdn.jsdelivr.net. Check your internet connection or whether a network filter is blocking it.";
   }
-  const box = $("#fatal");
-  box.querySelector("p").textContent = help;
-  box.querySelector("code").textContent = msg;
-  box.hidden = false;
+  $("#fatal-help").textContent = help;
+  $("#fatal-cmd").textContent = command;
+  $("#fatal-cmd").hidden = !command;
+  $("#fatal-detail").textContent = `Error: ${msg}`;
+  $("#fatal-reload").onclick = () => location.reload();
+  $("#fatal-close").onclick = () => ($("#fatal").hidden = true);
+  $("#fatal").hidden = false;
 }
 
 async function loadSurvey() {
@@ -157,14 +193,49 @@ function pickInitialFrame() {
   return usableFrame(best);
 }
 
+// SPHEREx has 6 detector arrays, each covering an equal run of frames (0 if the map isn't cut that way).
+const framesPerDetector = () => (Number.isInteger(wavelengths.length / 6) ? wavelengths.length / 6 : 0);
+
 function updateWavelengthUi() {
-  const wl = wavelengths[frame];
-  const perDetector = wavelengths.length / 6; // SPHEREx has 6 detector arrays
-  const detector = Number.isInteger(perDetector) ? ` · detector ${Math.floor(frame / perDetector) + 1}` : "";
-  $("#wl-slider").value = frame;
-  $("#wl-label").textContent = `${wl.toFixed(2)} µm${detector}`;
+  const wl = wavelengths[frame], per = framesPerDetector(), detector = per ? Math.floor(frame / per) + 1 : 0;
+  const slider = $("#wl-slider");
+  slider.value = frame;
+  slider.setAttribute("aria-valuetext", `${wl.toFixed(2)} microns${detector ? `, detector ${detector}` : ""}`);
+  $("#wl-label").textContent = wl.toFixed(2);
+  $("#wl-det").textContent = detector ? `Infrared color, detector ${detector} of 6` : "Infrared color";
   $("#wl-hint").textContent = hintFor(wl);
-  $("#wl-label").classList.toggle("loading", sky.shown.frame !== frame);
+  $(".wl-value").classList.toggle("loading", sky.shown.frame !== frame);
+  document.querySelectorAll(".wl-span").forEach((g) => g.classList.toggle("on", +g.dataset.det === detector));
+}
+
+// The scale under the slider: one tick per frame, a taller one where each detector starts,
+// labelled with its first wavelength. Frames with no data get no tick.
+const THUMB_W = 11; // width of the slider's handle in style.css: the ticks are inset by half of it
+function drawScale() {
+  const box = $("#wl-ticks"), n = wavelengths.length, W = box.clientWidth;
+  if (!W || n < 2) return;
+  const H = 34, base = 19.5, per = framesPerDetector() || n;
+  const x = (i) => Math.round(THUMB_W / 2 + (i / (n - 1)) * (W - THUMB_W)) + 0.5;
+  const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H });
+  root.append(svg("line", { x1: x(0), x2: x(n - 1), y1: base, y2: base, class: "wl-base" }));
+  const spanW = (W - THUMB_W) / (n / per);
+  const roomy = spanW > 92; // room for "D1" beside the wavelength
+  for (let start = 0; start < n; start += per) {
+    const g = svg("g", { class: "wl-span", "data-det": start / per + 1 });
+    for (let i = start; i < Math.min(n, start + per); i++) {
+      if (blankFrames.has(i)) continue;
+      g.append(svg("line", { x1: x(i), x2: x(i), y1: i === start ? 4 : 11, y2: base, class: i === start ? "wl-edge" : "wl-tick" }));
+    }
+    // On a narrow scale, label every other detector, and never run into the label at the far end.
+    const k = start / per, last = start + per >= n;
+    if ((spanW > 34 || k % 2 === 0) && !(last && spanW < 76)) {
+      g.append(svg("text", { x: x(start), y: H - 2, class: "wl-text" }, `${per < n && roomy ? `D${k + 1}  ` : ""}${wavelengths[start].toFixed(2)}`));
+    }
+    root.append(g);
+  }
+  root.append(svg("line", { x1: x(n - 1), x2: x(n - 1), y1: 4, y2: base, class: "wl-edge" }));
+  root.append(svg("text", { x: x(n - 1), y: H - 2, class: "wl-text", "text-anchor": "end" }, `${wavelengths[n - 1].toFixed(2)} µm`));
+  box.replaceChildren(root);
 }
 
 // ------------------------------------------------------------------ wavelength layers
@@ -314,7 +385,8 @@ async function toggleSweep() {
   const btn = $("#wl-play");
   if (sweeping) { sweeping = false; return; }
   sweeping = true;
-  btn.textContent = "❚❚";
+  setIcon(btn, "pause");
+  btn.setAttribute("aria-label", "Stop the sweep");
   while (sweeping) {
     const started = performance.now(), before = frame;
     const next = nextFrame(frame);
@@ -327,7 +399,8 @@ async function toggleSweep() {
     await sleep(Math.max(0, SWEEP_MS - (performance.now() - started)));
   }
   sweeping = false;
-  btn.textContent = "▶";
+  setIcon(btn, "play");
+  btn.setAttribute("aria-label", "Sweep through all infrared colors");
   syncUrl();
 }
 
@@ -438,6 +511,7 @@ async function search(q, featured = null, fovOverride = null) {
   try {
     const t = { ...(await resolve(q)) };
     if (ticket !== searchTicket) return; // a newer search took over
+    if (t.kind === "planet") t.name = t.name.replace(/\s*\(\d+\)$/, ""); // "Jupiter (599)": the number is JPL's own ID
     if (featured?.name) t.name = featured.name;
     if (featured?.label && t.kind === "coordinates") t.name = featured.label;
     current = { ...t, query: q, blurb: featured?.blurb };
@@ -468,13 +542,13 @@ function showTarget(t, fovOverride, { fly = true } = {}) {
   targetOverlay.removeAll();
   targetCatalog.removeAll();
   if (t.path?.length > 1) {
-    targetOverlay.add(A.polyline(t.path.map((p) => [p.ra, p.dec]), { color: "#7dd3fc", lineWidth: 2 }));
+    targetOverlay.add(A.polyline(t.path.map((p) => [p.ra, p.dec]), { color: MARK.path, lineWidth: 2 }));
   }
   targetCatalog.addSources([A.source(t.ra, t.dec, { name: t.name })]);
   if (t.catalog_ra != null) {
     // Where catalogs put it in 2000 vs where SPHEREx saw it: the star has moved!
-    targetOverlay.add(A.polyline([[t.catalog_ra, t.catalog_dec], [t.ra, t.dec]], { color: "#ffe08a", lineWidth: 2, lineDash: [4, 4] }));
-    targetOverlay.add(A.circle(t.catalog_ra, t.catalog_dec, 0.004, { color: "#ffe08a", lineWidth: 1.5 }));
+    targetOverlay.add(A.polyline([[t.catalog_ra, t.catalog_dec], [t.ra, t.dec]], { color: MARK.catalog, lineWidth: 1.5, lineDash: [4, 4] }));
+    targetOverlay.add(A.circle(t.catalog_ra, t.catalog_dec, 0.004, { color: MARK.catalog, lineWidth: 1.5 }));
   }
 
   renderInfo(t);
@@ -544,28 +618,80 @@ function openInspector(open) {
 function renderInfo(t) {
   openInspector(true);
   $(".insp-scroll").scrollTop = 0;
-  $("#info-kind").textContent = { planet: "Solar system", "small-body": "Solar system", coordinates: "Position", "deep-sky": "Beyond the solar system" }[t.kind] || t.kind;
-  $("#info-name").textContent = t.name;
+  $("#info-name").textContent = $("#info-band-name").textContent = t.name;
   $("#info-type").textContent = t.type_label || "";
   $("#info-blurb").textContent = t.blurb || "";
 
-  const facts = $("#info-facts");
-  facts.replaceChildren();
-  const add = (k, v) => { facts.append(el("dt", {}, k), el("dd", {}, v)); };
+  // The facts, one ruled cell each. A cell is { label, value, note?, wide? }; long values get a full row.
+  const cells = [];
+  const add = (label, value, note) => cells.push({ label, value, note, wide: String(value).length > 28 });
   if (t.distance_ly) add("Distance", t.distance_ly < 1000 ? `${t.distance_ly.toLocaleString()} light-years` : `${Math.round(t.distance_ly).toLocaleString()} light-years`);
   if (t.pm_total_arcsec_yr != null) {
     const yrsPerMoon = 1800 / t.pm_total_arcsec_yr; // full-moon width ≈ 1800″
-    add("Moves across sky", `${t.pm_total_arcsec_yr.toFixed(2)}″ per year` + (t.pm_total_arcsec_yr > 0.5 ? ` (a full-Moon width every ${Math.round(yrsPerMoon).toLocaleString()} yrs)` : ""));
+    add("Moves across sky", `${t.pm_total_arcsec_yr.toFixed(2)}″ per year`, t.pm_total_arcsec_yr > 0.5 ? `A full-Moon width every ${Math.round(yrsPerMoon).toLocaleString()} years` : null);
   }
   if (t.moved_arcsec_since_catalog) {
     const m = t.moved_arcsec_since_catalog;
-    add("Moved since 2000", m >= 60 ? `${(m / 60).toFixed(1)} arcminutes (yellow ring = year 2000, orange = SPHEREx ${t.epoch})` : `${m}″ (yellow ring = year 2000)`);
+    add("Moved since 2000", m >= 60 ? `${(m / 60).toFixed(1)} arcminutes` : `${m}″`);
   }
-  if (t.moving) add("Position for", `${t.position_date} UTC`);
-  if (t.path?.length) add("Blue line", t.path_label);
-  add("Sky position", `RA ${t.ra.toFixed(4)}°, Dec ${t.dec.toFixed(4)}°`);
-  if (t.aliases?.length) add("Also known as", t.aliases.filter((a) => !a.startsWith("NAME")).slice(0, 3).join(", "));
+  if (t.moving) add("Position for", `${plainDates(t.position_date)} UTC`);
+  add("Sky position", `RA ${t.ra.toFixed(4)}°  Dec ${t.dec < 0 ? "−" : "+"}${Math.abs(t.dec).toFixed(4)}°`);
+  fillFacts($("#info-facts"), cells);
+
+  // Key to the marks on the map, each drawn as it appears there.
+  const key = [];
+  if (t.catalog_ra != null) key.push(["target", `SPHEREx, ${t.epoch}`], ["catalog", "Catalogs, year 2000"]);
+  if (t.path?.length > 1) {
+    if (!key.length) key.push(["target", "Where it is now"]);
+    key.push(["path", plainDates(t.path_label)]);
+  }
+  if (key.length) {
+    const cell = el("div", { className: "fact wide" }), dd = el("dd", { className: "map-key" });
+    for (const [mark, text] of key) {
+      const item = el("span", {}, text);
+      item.prepend(markSwatch(mark));
+      dd.append(item);
+    }
+    cell.append(el("dt", {}, "On the map"), dd);
+    $("#info-facts").append(cell);
+  }
+
+  // At the foot of the panel: its other names and where the facts come from.
+  cells.length = 0;
+  const aliases = (t.aliases || []).filter((a) => !a.startsWith("NAME")).slice(0, 3);
+  if (aliases.length) add("Also known as", aliases.join(", "));
   add("Data from", t.source);
+  fillFacts($("#info-ref"), cells);
+}
+
+// Lay facts out as ruled cells, two to a row; a long one (`wide`) takes a row to itself.
+function fillFacts(list, cells) {
+  list.replaceChildren();
+  let column = 0; // 0 = a new row starts here, 1 = the right-hand cell of a row
+  cells.forEach((c, i) => {
+    // A short cell with nobody to sit beside takes the whole row instead of leaving a hole.
+    const next = cells[i + 1];
+    const wide = c.wide || (column === 0 && (!next || next.wide));
+    column = wide ? 0 : 1 - column;
+    const cell = el("div", { className: "fact" + (wide ? " wide" : "") });
+    const dd = el("dd", {}, c.value);
+    if (c.note) dd.append(el("small", {}, c.note));
+    cell.append(el("dt", {}, c.label), dd);
+    list.append(cell);
+  });
+}
+
+// A small drawing of one of the map's marks, for the key in the inspector.
+function markSwatch(mark) {
+  const width = mark === "target" ? 14 : 24;
+  const root = svg("svg", { width, height: 14, viewBox: `0 0 ${width} 14`, "aria-hidden": "true" });
+  const stroke = { fill: "none", stroke: MARK[mark], "stroke-width": mark === "target" ? 2 : 1.5 };
+  if (mark === "path") root.append(svg("path", { d: "M1 11 9 5l6 3 8-5", ...stroke, "stroke-width": 2 }));
+  else {
+    if (mark === "catalog") root.append(svg("path", { d: "M13 7h10", ...stroke, "stroke-dasharray": "3 3" }));
+    root.append(svg("circle", { cx: 7, cy: 7, r: 5, ...stroke }));
+  }
+  return root;
 }
 
 // ------------------------------------------------------------------ overlays
@@ -588,7 +714,7 @@ const OVERLAYS = {
         return [s.ra + ((s.pmra || 0) * years) / 3.6e6 / cosDec, s.dec + ((s.pmdec || 0) * years) / 3.6e6, { name: `Gaia DR3 ${s.id}`, G: s.g }];
       });
     },
-    style: { name: "Gaia DR3", color: "#ffe08a", sourceSize: 8, shape: "cross" },
+    style: { name: "Gaia DR3", color: MARK.gaia, sourceSize: 8, shape: "cross" },
   },
 };
 
@@ -732,11 +858,17 @@ function applyUrlState() {
 // ------------------------------------------------------------------ wiring
 function buildFeatured() {
   const box = $("#featured");
-  FEATURED.forEach((f) => {
-    const b = el("button", { className: "chip", type: "button" }, f.label);
-    b.onclick = () => search(f.q, f);
-    box.append(b);
-  });
+  const group = (title, items) => {
+    box.append(el("h3", {}, title));
+    items.forEach((f) => {
+      const b = el("button", { className: "target", type: "button" });
+      b.append(el("b", {}, f.label), el("span", {}, f.what));
+      b.onclick = () => search(f.q, f);
+      box.append(b);
+    });
+  };
+  group("Challenge test targets", FEATURED.filter((f) => f.test));
+  group("Also worth a look", FEATURED.filter((f) => !f.test));
 }
 
 function renderSuggestions(text) {
@@ -746,7 +878,7 @@ function renderSuggestions(text) {
   ul.replaceChildren();
   items.forEach((f) => {
     const li = el("li");
-    li.append(el("span", {}, f.label), el("small", {}, f.q === f.label ? "" : "featured"));
+    li.append(el("span", {}, f.label), el("small", {}, f.what));
     li.onmousedown = (e) => { e.preventDefault(); search(f.q, f); };
     ul.append(li);
   });
@@ -855,31 +987,62 @@ aladin = A.aladin("#sky", {
   showSettingsControl: false,
   showShareControl: false,
   showSimbadPointerControl: false, // it asks the CDS servers directly; clicking the map (inspectAt) does the same job through our backend
-  showCooLocation: true,
-  showStatusBar: true,
-  backgroundColor: "rgb(4,6,13)",
+  // Aladin's status bar and coordinate readout are off: they are the only parts of its own
+  // interface that carry tooltips, and its tooltip code can throw while the viewer is starting
+  // ("null is not an object (evaluating 'A.innerHTML=\"\"')" in Safari), which left a black page.
+  // The page shows loading and positions itself (the wavelength rail, the inspector).
+  showCooLocation: false,
+  showStatusBar: false,
+  backgroundColor: "rgb(3,6,15)",
 });
 
-targetOverlay = A.graphicOverlay({ color: "#7dd3fc", lineWidth: 2 });
+targetOverlay = A.graphicOverlay({ color: MARK.path, lineWidth: 2 });
 aladin.addOverlay(targetOverlay);
 targetCatalog = A.catalog({
-  name: "Target", color: "#ff8a3d", sourceSize: 26, shape: "circle",
-  displayLabel: true, labelColumn: "name", labelColor: "#ffd9bd", labelFont: "600 14px Inter, sans-serif",
+  name: "Target", color: MARK.target, sourceSize: 26, shape: "circle",
 });
 aladin.addCatalog(targetCatalog);
+
+// The selected object's name is a white tag beside its ring. (Aladin's own labels are bare text:
+// they vanish on bright sky and among the Names. names.js keeps its labels clear of this tag.)
+const targetTag = el("div", { className: "target-tag", hidden: true });
+aladin.getParentDiv().append(targetTag);
+let tagAt = "";
+function placeTargetTag() {
+  requestAnimationFrame(placeTargetTag);
+  const t = document.body.classList.contains("has-panel") ? current : null;
+  let p = null;
+  if (t) { try { p = aladin.world2pix(t.ra, t.dec); } catch {} }
+  const [w, h] = aladin.getSize();
+  const at = p && p[0] >= 0 && p[0] <= w && p[1] >= 0 && p[1] <= h ? `${Math.round(p[0] + 18)}px, ${Math.round(p[1] - 10)}px|${t.name}` : "";
+  if (at === tagAt) return;
+  tagAt = at;
+  targetTag.hidden = !at;
+  if (!at) return;
+  targetTag.textContent = t.name;
+  targetTag.style.transform = `translate(${at.split("|")[0]})`;
+}
+placeTargetTag();
+
+// The header strip of the inspector shows the object's name once its title has scrolled out of sight.
+new IntersectionObserver(([entry]) => $(".insp-band").classList.toggle("scrolled", !entry.isIntersecting),
+  { root: $(".insp-scroll"), rootMargin: "-36px 0px 0px 0px" }).observe($("#info-name"));
 
 timelapse = createTimelapse({ api: API, colormap: () => colormap });
 names = createNames({
   api: API, aladin, target: () => (document.body.classList.contains("has-panel") ? current : null),
-  avoid: ".brand, .search, .dock, .welcome, .inspector, .toast",
+  avoid: ".topbar, .viewbar, .rail, .welcome, .inspector, .toast",
   onError: () => toast("Some names couldn't be loaded: the catalog didn't answer. They are retried as you move around.", 5000),
 });
 watchTiles();
+new ResizeObserver(() => { drawScale(); updateWavelengthUi(); }).observe($("#wl-ticks"));
+drawScale();
 updateWavelengthUi();
 wireControls();
 startIdleDrift();
 applyUrlState();
 warmFeatured();
+booted = true;
 
 // Handy for debugging in the browser console.
 window.skyshift = { get aladin() { return aladin; }, get layer() { return sky.shown.hips; }, sky, survey, timelapse, names, setFrame: showFrame, search, inspectAt, tilesInView, tilesAround, healpixTile };

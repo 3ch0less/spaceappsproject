@@ -3,82 +3,118 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>SkyShift — the infrared sky</title>
+  <meta name="theme-color" content="#0B3D91">
+  <title>SkyShift: the infrared sky</title>
   <meta name="description" content="Explore NASA SPHEREx's infrared map of the entire sky. Search any star, planet, asteroid or galaxy and fly to it.">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="preload" href="fonts/archivo-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="style.css">
   <!-- Start downloading the sky viewer right away (same URL as ALADIN_URL in app.js). -->
   <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/aladin-lite@3.8.2/dist/aladin.js" crossorigin>
 </head>
 <body>
+  <!-- Icons: Lucide (ISC licence), drawn with square caps by style.css. Used as <svg class="icon"><use href="#i-name"/></svg>. -->
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><polygon points="7 4 20 12 7 20"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></symbol>
+    <symbol id="i-step-back" viewBox="0 0 24 24"><line x1="18" x2="18" y1="20" y2="4"/><polygon points="14,20 4,12 14,4"/></symbol>
+    <symbol id="i-step-forward" viewBox="0 0 24 24"><line x1="6" x2="6" y1="4" y2="20"/><polygon points="10,4 20,12 10,20"/></symbol>
+    <symbol id="i-zoom-in" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/><line x1="11" x2="11" y1="8" y2="14"/><line x1="8" x2="14" y1="11" y2="11"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2 21h20z"/><path d="M12 10v5"/><path d="M12 18h.01"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M3 15v6h18v-6"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></symbol>
+  </svg>
+
   <!-- The sky itself: you are at the centre of the sphere looking out. -->
   <div id="sky"></div>
 
   <header class="topbar">
     <div class="brand">
-      <span class="brand-mark" aria-hidden="true"></span>
-      <div>
-        <h1>SkyShift</h1>
-        <p>The whole sky in infrared, from NASA's SPHEREx</p>
-      </div>
+      <svg class="brand-mark" viewBox="0 0 28 28" aria-hidden="true">
+        <circle cx="8" cy="20" r="4.25" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M11.4 16.6 15.6 12.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 2"/>
+        <circle class="brand-dot" cx="20" cy="8" r="4.75" stroke="currentColor" stroke-width="1.5"/>
+      </svg>
+      <h1>SkyShift</h1>
+      <p>The whole sky in infrared, from NASA's SPHEREx</p>
     </div>
 
     <form id="search" class="search" autocomplete="off" role="search">
-      <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <svg class="icon search-icon" aria-hidden="true"><use href="#i-search"/></svg>
       <input id="search-input" type="search" placeholder="Search a star, planet, asteroid or galaxy…" aria-label="Search the sky">
-      <button type="submit">Go</button>
+      <button type="submit" class="btn primary">Search</button>
       <ul id="suggestions" class="suggestions" hidden></ul>
     </form>
+
+    <!-- How the map is drawn. On phones this row moves down, above the wavelength rail. -->
+    <div class="viewbar" role="group" aria-label="Map view">
+      <div class="seg" id="view-seg" role="group" aria-label="Projection">
+        <button type="button" data-proj="SIN" class="on">Sphere</button>
+        <button type="button" data-proj="AIT">Whole sky</button>
+        <button type="button" data-proj="TAN">Close-up</button>
+      </div>
+      <label class="check"><input type="checkbox" id="tg-names"> Names<svg class="swatch" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="2.5" fill="var(--mark-ghost)" stroke="none"/></svg></label>
+      <label class="check"><input type="checkbox" id="tg-gaia"> Gaia stars<svg class="swatch" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1v10M1 6h10" stroke="var(--mark-gaia)"/></svg></label>
+      <label class="field">Color
+        <select id="cmap" aria-label="Color style">
+          <option value="magma">Heat</option>
+          <option value="grayscale">Black &amp; white</option>
+          <option value="viridis">Aurora</option>
+          <option value="redtemperature">Ember</option>
+        </select>
+      </label>
+    </div>
   </header>
 
-  <!-- Welcome card (first visit) -->
-  <section id="welcome" class="card welcome">
-    <h2>You're standing inside the sky.</h2>
-    <p>This is the entire sky as seen by NASA's <strong>SPHEREx</strong> telescope in infrared light, which is invisible to our eyes. Drag to look around, scroll to zoom, or jump to something:</p>
-    <div id="featured" class="chips"></div>
-    <button class="link" id="welcome-close">Just let me explore</button>
+  <!-- Target list (first visit) -->
+  <section id="welcome" class="welcome" aria-labelledby="welcome-title">
+    <h2 id="welcome-title">You're standing inside the sky.</h2>
+    <p>This is the entire sky as seen by NASA's <strong>SPHEREx</strong> telescope in infrared light, which is invisible to our eyes. Drag to look around, scroll to zoom, or pick a target.</p>
+    <div id="featured" class="targets"></div>
+    <button class="btn" id="welcome-close" type="button" aria-label="Just let me explore"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg><span>Just let me explore</span></button>
   </section>
 
   <!-- Inspector: everything about the selected object, including its time-lapse -->
   <aside id="info" class="inspector" aria-label="Selected object" hidden>
     <div class="insp-scroll">
+      <div class="insp-band">
+        <span id="info-band-name" aria-hidden="true"></span>
+        <button id="act-zoom" type="button"><svg class="icon" aria-hidden="true"><use href="#i-zoom-in"/></svg>Zoom in</button>
+        <button id="act-share" type="button"><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>Copy link</button>
+        <button id="info-close" type="button" aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
+      </div>
       <header class="insp-head">
-        <button class="close" id="info-close" aria-label="Close">×</button>
-        <span id="info-kind" class="badge"></span>
         <h2 id="info-name"></h2>
-        <p id="info-type" class="muted"></p>
+        <p id="info-type" class="insp-type"></p>
         <p id="info-blurb" class="blurb"></p>
         <dl id="info-facts" class="facts"></dl>
-        <div class="actions">
-          <button id="act-zoom" class="btn">Zoom in closer</button>
-          <button id="act-share" class="btn ghost">Copy link</button>
-        </div>
       </header>
 
       <!-- Time-lapse: one image per SPHEREx visit, played like a flipbook -->
       <section id="tl" class="insp-sec" aria-label="Time-lapse" hidden>
         <div class="sec-head">
           <h3>Time-lapse</h3>
-          <span id="tl-sub" class="muted"></span>
+          <span id="tl-sub" class="sec-sub"></span>
         </div>
-        <div id="tl-stage" class="tl-stage" tabindex="0" aria-label="Time-lapse image. Arrow keys step through visits, space plays or pauses.">
-          <canvas id="tl-canvas"></canvas>
+        <div class="tl-frame">
           <div id="tl-hud" class="tl-hud" hidden></div>
-          <div id="tl-status" class="tl-status" role="status" hidden>
-            <p id="tl-status-text"></p>
-            <div class="tl-progress"><div id="tl-bar"></div></div>
-            <button id="tl-retry" class="btn" type="button" hidden>Load time-lapse</button>
+          <div id="tl-stage" class="tl-stage" tabindex="0" aria-label="Time-lapse image. Arrow keys step through visits, space plays or pauses.">
+            <canvas id="tl-canvas"></canvas>
+            <div id="tl-status" class="tl-status" role="status" hidden>
+              <p id="tl-status-text"></p>
+              <div class="tl-progress"><div id="tl-bar"></div></div>
+              <button id="tl-retry" class="btn primary" type="button" hidden>Load time-lapse</button>
+            </div>
+          </div>
+          <div class="tl-transport">
+            <button id="tl-prev" class="tl-btn" type="button" aria-label="Previous visit" title="Previous visit"><svg class="icon" aria-hidden="true"><use href="#i-step-back"/></svg></button>
+            <button id="tl-play" class="tl-btn play" type="button" aria-label="Play"><svg class="icon icon-solid" aria-hidden="true"><use href="#i-play"/></svg></button>
+            <button id="tl-next" class="tl-btn" type="button" aria-label="Next visit" title="Next visit"><svg class="icon" aria-hidden="true"><use href="#i-step-forward"/></svg></button>
+            <div id="tl-track" class="tl-track"></div>
           </div>
         </div>
-        <div class="tl-transport">
-          <button id="tl-prev" class="tl-btn" type="button" aria-label="Previous visit" title="Previous visit">‹</button>
-          <button id="tl-play" class="tl-btn play" type="button" aria-label="Play">▶</button>
-          <button id="tl-next" class="tl-btn" type="button" aria-label="Next visit" title="Next visit">›</button>
-          <div id="tl-track" class="tl-track"></div>
-        </div>
-        <div id="tl-dets" class="tl-dets" role="group" aria-label="SPHEREx detector (infrared colour band)"></div>
+        <div id="tl-dets" class="tl-dets" role="group" aria-label="SPHEREx detector (infrared color band)"></div>
         <div class="tl-opts">
           <div class="seg" id="tl-mode" role="group" aria-label="What to show">
             <button type="button" data-mode="blink" class="on" title="Show each visit in turn">Blink</button>
@@ -92,9 +128,9 @@
           </select>
         </div>
         <div class="tl-opts">
-          <label class="toggle" title="Marks where the catalog says the object should be on each date"><input type="checkbox" id="tl-marker" checked> Marker</label>
-          <label class="toggle"><input type="checkbox" id="tl-gaia"> Gaia stars</label>
-          <label class="tl-bright">Brightness <input type="range" id="tl-bright" min="0" max="100" value="50" aria-label="Image brightness"></label>
+          <label class="check" title="Marks where the catalog says the object should be on each date"><input type="checkbox" id="tl-marker" checked> Marker<svg class="swatch" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 0v3.5M6 8.5V12M0 6h3.5M8.5 6H12" stroke="var(--nasa-red)" stroke-width="2"/></svg></label>
+          <label class="check"><input type="checkbox" id="tl-gaia"> Gaia stars<svg class="swatch" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.5" stroke="var(--mark-gaia)"/></svg></label>
+          <label class="field tl-bright">Brightness <input type="range" class="slim" id="tl-bright" min="0" max="100" value="50" aria-label="Image brightness"></label>
         </div>
         <p id="tl-note" class="sec-note"></p>
       </section>
@@ -103,7 +139,7 @@
       <section id="spec" class="insp-sec" aria-label="Spectrum" hidden>
         <div class="sec-head">
           <h3>Spectrum</h3>
-          <span class="muted">brightness in each infrared colour</span>
+          <span class="sec-sub">brightness in each infrared color</span>
         </div>
         <p id="spec-headline" class="spec-headline"></p>
         <div class="spec-wrap">
@@ -112,51 +148,47 @@
         </div>
         <div id="spec-legend" class="spec-legend"></div>
         <p id="spec-note" class="sec-note"></p>
-        <button id="spec-all" class="btn wide" type="button" hidden>Load the other detectors</button>
+        <button id="spec-all" class="btn wide" type="button" hidden><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span></span></button>
         <details class="spec-details">
           <summary>Show the numbers</summary>
           <div id="spec-table" class="spec-table"></div>
         </details>
       </section>
+
+      <!-- Other names and where the facts come from -->
+      <section class="insp-sec" aria-label="Reference">
+        <dl id="info-ref" class="facts"></dl>
+      </section>
     </div>
   </aside>
 
-  <!-- Controls -->
-  <section class="dock">
-    <div class="dock-row">
-      <button id="wl-play" class="icon-btn" aria-label="Sweep through all infrared colors" title="Sweep through all 102 infrared colors">▶</button>
-      <div class="wl">
-        <div class="wl-head">
-          <span>Infrared color</span>
-          <strong id="wl-label">—</strong>
-        </div>
-        <input id="wl-slider" type="range" min="0" max="101" value="0" aria-label="Wavelength">
-        <div id="wl-hint" class="wl-hint"></div>
-      </div>
+  <!-- Wavelength rail: which of SPHEREx's 102 infrared colours the sky is shown in -->
+  <section class="rail" aria-label="Infrared color">
+    <button id="wl-play" class="btn-icon primary" type="button" aria-label="Sweep through all infrared colors" title="Sweep through all 102 infrared colors"><svg class="icon icon-solid" aria-hidden="true"><use href="#i-play"/></svg></button>
+    <div class="wl-read">
+      <p class="wl-value"><strong id="wl-label">–</strong><span class="wl-unit">µm</span><i class="wl-busy" aria-hidden="true"></i></p>
+      <p id="wl-det" class="wl-det">Infrared color</p>
     </div>
-    <div class="dock-row wrap">
-      <div class="seg" id="view-seg" role="group" aria-label="View">
-        <button data-proj="SIN" class="on">Sphere</button>
-        <button data-proj="AIT">Whole sky</button>
-        <button data-proj="TAN">Close-up</button>
+    <div class="wl-main">
+      <p id="wl-hint" class="wl-hint"></p>
+      <div class="wl-scale">
+        <div id="wl-ticks" class="wl-ticks" aria-hidden="true"></div>
+        <input id="wl-slider" type="range" min="0" max="101" value="0" aria-label="Wavelength">
       </div>
-      <label class="toggle"><input type="checkbox" id="tg-names"> Names</label>
-      <label class="toggle"><input type="checkbox" id="tg-gaia"> Gaia stars</label>
-      <select id="cmap" aria-label="Color style">
-        <option value="magma">Heat</option>
-        <option value="grayscale">Black &amp; white</option>
-        <option value="viridis">Aurora</option>
-        <option value="redtemperature">Ember</option>
-      </select>
     </div>
   </section>
 
   <div id="toast" class="toast" role="status" hidden></div>
 
-  <section id="fatal" class="card fatal" role="alert" hidden>
-    <h2>The sky couldn't load</h2>
-    <p></p>
-    <code></code>
+  <section id="fatal" class="fatal" role="alert" hidden>
+    <h2><svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg>The sky couldn't load</h2>
+    <p id="fatal-help"></p>
+    <code id="fatal-cmd" hidden></code>
+    <p id="fatal-detail" class="fatal-detail"></p>
+    <div class="fatal-actions">
+      <button id="fatal-reload" class="btn primary" type="button">Reload the page</button>
+      <button id="fatal-close" class="btn" type="button">Dismiss</button>
+    </div>
   </section>
 
   <script src="app.js" type="module"></script>
