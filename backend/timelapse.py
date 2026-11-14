@@ -270,11 +270,11 @@ def wavelength_at(table: dict, x: float, y: float) -> tuple[float, float]:
 
 # ---------------------------------------------------------------- 3. re-gridding
 
-def sky_grid(ra0: float, dec0: float, fov_arcmin: float) -> tuple[np.ndarray, np.ndarray, float]:
+def sky_grid(ra0: float, dec0: float, fov_arcmin: float, size: int = GRID) -> tuple[np.ndarray, np.ndarray, float]:
     """RA/Dec of every output pixel: north up, east left, tangent-plane projection."""
-    scale = fov_arcmin * 60 / GRID
-    half = (GRID - 1) / 2
-    j, i = np.mgrid[0:GRID, 0:GRID]
+    scale = fov_arcmin * 60 / size
+    half = (size - 1) / 2
+    j, i = np.mgrid[0:size, 0:size]
     xi = -(i - half) * scale / 206264.806
     eta = (half - j) * scale / 206264.806
     r0, d0 = math.radians(ra0), math.radians(dec0)

@@ -24,6 +24,7 @@
     <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
     <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2 21h20z"/><path d="M12 10v5"/><path d="M12 18h.01"/></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M3 15v6h18v-6"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
   </svg>
 
   <!-- The sky itself: you are at the centre of the sphere looking out. -->
@@ -135,6 +136,28 @@
         <p id="tl-note" class="sec-note"></p>
       </section>
 
+      <!-- WISE: the same patch as NASA's earlier infrared survey saw it in 2010. Folded away until asked for. -->
+      <details id="wise" class="insp-sec wise" hidden>
+        <summary class="sec-head">
+          <h3>WISE, 2010</h3>
+          <span id="wise-sub" class="sec-sub">the same patch, before SPHEREx</span>
+          <svg class="icon wise-chev" aria-hidden="true"><use href="#i-chevron"/></svg>
+        </summary>
+        <div class="tl-frame">
+          <div id="wise-hud" class="tl-hud" hidden></div>
+          <div id="wise-stage" class="tl-stage">
+            <canvas id="wise-canvas" role="img" aria-label="The same patch of sky photographed by NASA's WISE telescope in 2010"></canvas>
+            <div id="wise-status" class="tl-status" role="status" hidden>
+              <p id="wise-status-text"></p>
+              <div id="wise-busy" class="tl-progress busy"><div></div></div>
+              <button id="wise-retry" class="btn primary" type="button" hidden>Try again</button>
+            </div>
+          </div>
+        </div>
+        <div id="wise-bands" class="tl-dets wise-bands" role="group" aria-label="WISE infrared color band"></div>
+        <p id="wise-note" class="sec-note"></p>
+      </details>
+
       <!-- Spectrum: brightness at this spot in every exposure -->
       <section id="spec" class="insp-sec" aria-label="Spectrum" hidden>
         <div class="sec-head">
@@ -145,8 +168,10 @@
         <div class="spec-wrap">
           <div id="spec-chart"></div>
           <div id="spec-tip" class="spec-tip" hidden></div>
+          <button id="spec-reset" class="spec-reset" type="button" hidden>Reset zoom</button>
         </div>
         <div id="spec-legend" class="spec-legend"></div>
+        <p id="spec-hint" class="spec-hint"></p>
         <p id="spec-note" class="sec-note"></p>
         <button id="spec-all" class="btn wide" type="button" hidden><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span></span></button>
         <details class="spec-details">

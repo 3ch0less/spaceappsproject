@@ -3,7 +3,8 @@
  * SPHEREx returns to every spot about every six months. The backend (/api/timelapse)
  * turns each visit into one clean image per detector; this file plays those images like
  * a flipbook, so anything that moved or changed between visits jumps out, and plots the
- * brightness it measured in every single exposure.
+ * brightness it measured in every single exposure. Below the flipbook, a fold-away panel shows
+ * the same patch as NASA's WISE telescope saw it in 2010 (/api/wise): the "before" picture.
  *
  *   const tl = createTimelapse({ api, colormap: () => "magma" });
  *   tl.show(target);      // target: { ra, dec, name, pm_ra_mas_yr?, pm_dec_mas_yr?, epoch?, ... }
@@ -43,6 +44,11 @@ const DETECTORS = [
   { id: 4, range: "2.4–3.8 µm", lo: 2.4, hi: 3.8 }, { id: 5, range: "3.8–4.4 µm", lo: 3.8, hi: 4.4 }, { id: 6, range: "4.4–5.0 µm", lo: 4.4, hi: 5.0 },
 ];
 const FOVS = [3, 6, 12, 20]; // arcminutes, must match the backend
+// WISE's four bands. The first two are colours SPHEREx sees too (`det`: with which detector).
+const WISE_BANDS = [
+  { id: 1, wl: "3.4 µm", det: 4 }, { id: 2, wl: "4.6 µm", det: 6 }, { id: 3, wl: "12 µm" }, { id: 4, wl: "22 µm" },
+];
+const WISE_OPEN_KEY = "lumasphere.wise"; // remembers that the WISE panel was left open
 
 // One colour per visit, in this fixed order. No red or orange: in this interface red means
 // "you can press this" or "this is live". Validated on the chart's background (#050e22): the
@@ -85,11 +91,14 @@ export function createTimelapse({ api, colormap }) {
     play: $("#tl-play"), prev: $("#tl-prev"), next: $("#tl-next"), track: $("#tl-track"),
     dets: $("#tl-dets"), mode: $("#tl-mode"), fov: $("#tl-fov"), speed: $("#tl-speed"), bright: $("#tl-bright"),
     gaia: $("#tl-gaia"), marker: $("#tl-marker"), note: $("#tl-note"),
+    wise: $("#wise"), wStage: $("#wise-stage"), wCanvas: $("#wise-canvas"), wHud: $("#wise-hud"), wStatus: $("#wise-status"),
+    wStatusText: $("#wise-status-text"), wBusy: $("#wise-busy"), wRetry: $("#wise-retry"), wBands: $("#wise-bands"), wNote: $("#wise-note"),
     specSec: $("#spec"), specChart: $("#spec-chart"), specLegend: $("#spec-legend"), specNote: $("#spec-note"),
-    specHead: $("#spec-headline"), specAll: $("#spec-all"), specTable: $("#spec-table"), specTip: $("#spec-tip"),
+    specHead: $("#spec-headline"), specAll: $("#spec-all"), specTable: $("#spec-table"), specTip: $("#spec-tip"), specReset: $("#spec-reset"), specHint: $("#spec-hint"),
   };
   const ctx = ui.canvas.getContext("2d");
   const small = document.createElement("canvas"); // one image pixel per sky pixel; scaled up onto the stage
+  const wctx = ui.wCanvas.getContext("2d"), wsmall = document.createElement("canvas"); // the same pair for the WISE image
 
   const state = {
     target: null,
@@ -104,6 +113,7 @@ export function createTimelapse({ api, colormap }) {
     loading: {},      // detector -> { done, total, abort }
     errors: {},       // detector -> message
     gaia: null,       // { epoch, stars } for the current target + fov
+    wise: { band: 1, data: {}, loading: {}, errors: {} }, // the WISE image of this patch, per band (loading: band -> AbortController)
     token: 0,         // bumped on every new target/fov so late answers are ignored
   };
 
@@ -169,8 +179,9 @@ export function createTimelapse({ api, colormap }) {
   function reset() {
     state.token++;
     for (const l of Object.values(state.loading)) l.abort.abort();
+    for (const abort of Object.values(state.wise.loading)) abort.abort();
     setPlaying(false);
-    Object.assign(state, { data: {}, plan: null, visit: 0, loading: {}, errors: {}, gaia: null });
+    Object.assign(state, { data: {}, plan: null, visit: 0, loading: {}, errors: {}, gaia: null, wise: { band: state.wise.band, data: {}, loading: {}, errors: {} } });
   }
 
   // ---------------------------------------------------------------- public
@@ -178,18 +189,21 @@ export function createTimelapse({ api, colormap }) {
     reset();
     state.target = target;
     // Cold brown dwarfs only glow at the longest wavelengths; everything else is sharpest around 1.3 µm.
-    state.det = /brown dwarf/i.test(target.type_label || "") ? 6 : 2;
+    const cold = /brown dwarf/i.test(target.type_label || "");
+    state.det = cold ? 6 : 2;
+    state.wise.band = cold ? 2 : 1;
     state.held = !auto;
-    ui.section.hidden = ui.specSec.hidden = false;
+    ui.section.hidden = ui.specSec.hidden = ui.wise.hidden = false;
     ui.gaia.checked = false;
     render();
     if (auto) load(state.det);
+    if (ui.wise.open) loadWise();
   }
 
   function clear() {
     reset();
     state.target = null;
-    ui.section.hidden = ui.specSec.hidden = true;
+    ui.section.hidden = ui.specSec.hidden = ui.wise.hidden = true;
   }
 
   // ---------------------------------------------------------------- drawing the frame
@@ -200,22 +214,27 @@ export function createTimelapse({ api, colormap }) {
     return { d, v, ref: state.mode === "diff" ? d.visits[state.visit === 0 ? d.visits.length - 1 : 0] : null };
   }
 
-  function drawFrame() {
-    const size = ui.stage.clientWidth || 380, dpr = Math.min(2, window.devicePixelRatio || 1);
-    if (ui.canvas.width !== Math.round(size * dpr)) ui.canvas.width = ui.canvas.height = Math.round(size * dpr);
+  // Size a canvas to its (square) stage and wipe it. Returns the stage's width in CSS pixels.
+  function fitCanvas(canvas, ctx, stage) {
+    const size = stage.clientWidth || 380, dpr = Math.min(2, window.devicePixelRatio || 1);
+    if (canvas.width !== Math.round(size * dpr)) canvas.width = canvas.height = Math.round(size * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, size, size);
-    const f = currentFrame();
-    if (!f) return;
-    const { d, v, ref } = f, n = d.size;
-    if (small.width !== n) small.width = small.height = n;
-    const sctx = small.getContext("2d"), image = sctx.createImageData(n, n), px = image.data;
+    return size;
+  }
+
+  // Colour one image (`pixels`, with the backend's `d.range` and `d.size`) and draw it `size` wide.
+  // Given `refPixels`, draws the difference from that image instead.
+  function paint(ctx, scratch, d, pixels, refPixels, size) {
+    const n = d.size;
+    if (scratch.width !== n) scratch.width = scratch.height = n;
+    const sctx = scratch.getContext("2d"), image = sctx.createImageData(n, n), px = image.data;
     const { lo, hi } = d.range, gain = Math.pow(4, 1 - ui.bright.value / 50); // slider right = brighter
-    if (ref) {
+    if (refPixels) {
       // Difference: mid-grey = unchanged, white = brighter than the other visit, black = fainter.
       const span = 25 * d.range.noise * gain;
       for (let i = 0; i < n * n; i++) {
-        const diff = v.pixels[i] - ref.pixels[i];
+        const diff = pixels[i] - refPixels[i];
         const g = Number.isFinite(diff) ? clamp(127.5 + (diff / span) * 127.5, 0, 255) : 127.5;
         px[i * 4] = px[i * 4 + 1] = px[i * 4 + 2] = g; px[i * 4 + 3] = 255;
       }
@@ -224,7 +243,7 @@ export function createTimelapse({ api, colormap }) {
       // logarithmic for bright ones, so faint stars and a blazing one are visible together.
       const table = lut(colormap()), soft = 2.5 * d.range.noise * gain, norm = Math.asinh((hi - lo) / soft);
       for (let i = 0; i < n * n; i++) {
-        const x = v.pixels[i];
+        const x = pixels[i];
         const s = Number.isFinite(x) ? clamp(Math.asinh(Math.max(0, x - lo) / soft) / norm, 0, 1) : 0;
         const c = Math.round(s * 255) * 3;
         px[i * 4] = table[c]; px[i * 4 + 1] = table[c + 1]; px[i * 4 + 2] = table[c + 2]; px[i * 4 + 3] = 255;
@@ -233,37 +252,67 @@ export function createTimelapse({ api, colormap }) {
     sctx.putImageData(image, 0, 0);
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(small, 0, 0, size, size);
-    drawOverlays(d, v, size);
+    ctx.drawImage(scratch, 0, 0, size, size);
   }
+
+  function drawFrame() {
+    const size = fitCanvas(ui.canvas, ctx, ui.stage);
+    const f = currentFrame();
+    if (!f) return;
+    const { d, v, ref } = f;
+    paint(ctx, small, d, v.pixels, ref && ref.pixels, size);
+    drawOverlays(ctx, d, mjdToYear(v.mjd), size);
+  }
+
+  function drawWise() {
+    if (!ui.wise.open || !state.target) return;
+    const size = fitCanvas(ui.wCanvas, wctx, ui.wStage);
+    const d = state.wise.data[state.wise.band];
+    if (!d) return;
+    paint(wctx, wsmall, d, d.pixels, null, size);
+    // A planet or asteroid was somewhere else entirely in 2010: no marker for it here.
+    drawOverlays(wctx, d, d.epoch, size, { marker: !state.target.moving });
+  }
+  const drawAll = () => { drawFrame(); drawWise(); };
 
   // Sky offset (arcseconds east, north of the patch centre) -> canvas position.
   const toCanvas = (d, size, east, north) => [size / 2 - (east / d.scale_arcsec) * (size / d.size), size / 2 - (north / d.scale_arcsec) * (size / d.size)];
 
-  function drawOverlays(d, v, size) {
-    const t = state.target, year = mjdToYear(v.mjd), arcsecPerPx = (d.scale_arcsec * d.size) / size;
+  // Arcseconds east and north of the patch centre, on the flat (tangent-plane) grid the images use.
+  function skyOffset(t, ra, dec) {
+    const R = Math.PI / 180, d0 = t.dec * R, d1 = dec * R, dr = (ra - t.ra) * R;
+    const cosc = Math.sin(d0) * Math.sin(d1) + Math.cos(d0) * Math.cos(d1) * Math.cos(dr);
+    return [(Math.cos(d1) * Math.sin(dr) / cosc) * 206264.806,
+      ((Math.cos(d0) * Math.sin(d1) - Math.sin(d0) * Math.cos(d1) * Math.cos(dr)) / cosc) * 206264.806];
+  }
+
+  // Where the catalog says the target was in `year`, relative to the patch centre (its position plus its known motion).
+  function markerOffset(year) {
+    const t = state.target;
+    if (t.pm_ra_mas_yr == null || !t.epoch) return [0, 0];
+    return [(t.pm_ra_mas_yr * (year - t.epoch)) / 1000, (t.pm_dec_mas_yr * (year - t.epoch)) / 1000];
+  }
+
+  // Marks drawn over an image `d` taken in `year`: Gaia stars, the target's marker, scale bar, compass.
+  function drawOverlays(ctx, d, year, size, { marker = true } = {}) {
+    const t = state.target, arcsecPerPx = (d.scale_arcsec * d.size) / size;
     ctx.lineCap = "butt";
 
     if (ui.gaia.checked && state.gaia) {
-      // Each Gaia star is drawn where its measured motion puts it on this visit's date.
-      const cosd = Math.cos((t.dec * Math.PI) / 180), dt = year - state.gaia.epoch;
+      // Each Gaia star is drawn where its measured motion puts it on this image's date.
+      const dt = year - state.gaia.epoch;
       ctx.strokeStyle = "rgba(255, 197, 49, 0.9)"; ctx.lineWidth = 1.2; // Gaia gold, as on the map
       for (const s of state.gaia.stars) {
-        const east = (s.ra - t.ra) * 3600 * cosd + ((s.pmra || 0) * dt) / 1000;
-        const north = (s.dec - t.dec) * 3600 + ((s.pmdec || 0) * dt) / 1000;
+        const [e0, n0] = skyOffset(t, s.ra, s.dec);
+        const east = e0 + ((s.pmra || 0) * dt) / 1000, north = n0 + ((s.pmdec || 0) * dt) / 1000;
         const [x, y] = toCanvas(d, size, east, north);
         if (x < 4 || y < 4 || x > size - 4 || y > size - 4) continue;
         ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.stroke();
       }
     }
 
-    if (ui.marker.checked) {
-      // Where the catalog says the target should be on this date (its position plus its known motion).
-      let east = 0, north = 0;
-      if (t.pm_ra_mas_yr != null && t.epoch) {
-        east = (t.pm_ra_mas_yr * (year - t.epoch)) / 1000;
-        north = (t.pm_dec_mas_yr * (year - t.epoch)) / 1000;
-      }
+    if (marker && ui.marker.checked) {
+      const [east, north] = markerOffset(year);
       const [x, y] = toCanvas(d, size, east, north), gap = 11, len = 9;
       ctx.lineCap = "butt";
       ctx.beginPath();
@@ -401,7 +450,7 @@ export function createTimelapse({ api, colormap }) {
   }
 
   function render() {
-    renderStatus(); renderHud(); renderDetectors(); renderTrack(); renderSub(); drawFrame(); renderSpectrum();
+    renderStatus(); renderHud(); renderDetectors(); renderTrack(); renderSub(); drawFrame(); renderSpectrum(); renderWise();
     const d = state.data[state.det], many = !!d && d.visits.length > 1;
     ui.play.disabled = ui.prev.disabled = ui.next.disabled = !many;
     setIcon(ui.play, state.playing ? "pause" : "play");
@@ -433,12 +482,90 @@ export function createTimelapse({ api, colormap }) {
       const data = await r.json();
       if (token !== state.token) return;
       state.gaia = data;
-      drawFrame();
+      drawAll();
     } catch {
       if (token !== state.token) return;
       ui.gaia.checked = false;
       ui.note.textContent = "The Gaia star catalog didn't answer. Try the switch again in a moment.";
     }
+  }
+
+  // ---------------------------------------------------------------- WISE, 2010
+  // The same patch as NASA's WISE telescope saw it, at the same size and orientation, so it
+  // sits under the flipbook as the "before" picture. It follows the patch width, colour style,
+  // brightness, marker and Gaia switches above; only its band is its own.
+  async function loadWise(band = state.wise.band) {
+    const w = state.wise, t = state.target, token = state.token;
+    if (!t) return;
+    w.band = band;
+    if (w.data[band] || w.loading[band]) return renderWise();
+    const abort = (w.loading[band] = new AbortController());
+    delete w.errors[band];
+    renderWise();
+    try {
+      const r = await fetch(`${api}/api/wise?ra=${t.ra.toFixed(5)}&dec=${t.dec.toFixed(5)}&fov=${state.fov}&band=${band}`, { signal: abort.signal });
+      if (r.status === 404) throw new Error("This backend doesn't serve WISE images yet. Restart it to pick up the update.");
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `The WISE service answered ${r.status}`);
+      const d = await r.json();
+      if (token !== state.token) return;
+      d.pixels = decodeImage(d.image, d.size);
+      delete d.image;
+      w.data[band] = d;
+    } catch (e) {
+      if (e.name === "AbortError" || token !== state.token) return;
+      w.errors[band] = /Failed to fetch|Load failed|NetworkError/i.test(e.message) ? "Couldn't reach the Lumasphere backend." : e.message;
+    } finally {
+      if (token === state.token) { delete w.loading[band]; renderWise(); }
+    }
+  }
+
+  // Roughly when SPHEREx saw this patch: the latest loaded visit, else the object's own date, else today.
+  function spherexYear() {
+    const last = state.data[state.det]?.visits.at(-1);
+    return last ? mjdToYear(last.mjd) : state.target.epoch || mjdToYear(Date.now() / 86400000 + MJD_UNIX);
+  }
+
+  function wiseNote(d) {
+    const t = state.target, band = WISE_BANDS[d.band - 1], gap = spherexYear() - d.epoch;
+    let note = `NASA's WISE telescope photographed the whole sky in 2010, about ${Math.round(gap)} years before SPHEREx. This is the same patch at the same size, north up, at ${band.wl}`;
+    note += band.det ? `: a color SPHEREx sees too, with detector ${band.det}. ` : ": a longer wavelength than SPHEREx reaches, where cool dust glows and most stars fade. ";
+    if (t.moving) {
+      note += "This object travels across the sky and was somewhere else in 2010, so this shows what lies behind where it is today.";
+    } else if (t.pm_total_arcsec_yr > 0.3) {
+      const [east, north] = markerOffset(d.epoch), half = (d.scale_arcsec * d.size) / 2;
+      note += `Catalogs say this star has moved about ${Math.round(t.pm_total_arcsec_yr * gap)}″ since then`;
+      note += Math.abs(east) < half && Math.abs(north) < half
+        ? ": the marker shows where it was in 2010."
+        : ", which puts its 2010 position outside this patch. Choose a wider patch to find it.";
+    } else {
+      note += "Anything in one image and not the other has moved, brightened or faded since.";
+    }
+    if (d.range.saturated > 0.002) note += " The brightest parts overwhelmed WISE's detectors; they are filled in at full brightness.";
+    return note;
+  }
+
+  function renderWise() {
+    if (!state.target) return;
+    const w = state.wise, d = w.data[w.band], busy = !!w.loading[w.band], err = w.errors[w.band];
+    const focused = ui.wBands.contains(document.activeElement);
+    ui.wBands.replaceChildren(...WISE_BANDS.map(({ id, wl, det }) => {
+      const b = el("button", { type: "button", className: "tl-det" + (id === w.band ? " on" : "") + (w.data[id] ? " loaded" : "") + (w.loading[id] ? " loading" : "") });
+      b.setAttribute("aria-pressed", id === w.band);
+      b.title = `WISE band ${id}, ${wl}` + (det ? `: also seen by SPHEREx detector ${det}` : ": beyond SPHEREx's range");
+      b.append(el("b", {}, `W${id}`), el("small", {}, w.loading[id] ? "…" : wl));
+      b.onclick = () => loadWise(id);
+      return b;
+    }));
+    if (focused) ui.wBands.children[w.band - 1].focus(); // the buttons were rebuilt: keep the keyboard where it was
+    const text = busy ? "Fetching the WISE image of this patch…" : err || "";
+    ui.wStatus.hidden = !text;
+    ui.wStatusText.textContent = text;
+    ui.wBusy.hidden = !busy;
+    ui.wRetry.hidden = busy || !err;
+    ui.wHud.hidden = !d;
+    if (d) ui.wHud.replaceChildren(el("strong", {}, "2010"), el("span", {}, "WISE telescope"), el("span", {}, `Band ${d.band}, ${WISE_BANDS[d.band - 1].wl}`));
+    ui.wNote.textContent = d ? wiseNote(d) : "";
+    drawWise();
   }
 
   // ---------------------------------------------------------------- spectrum
@@ -477,6 +604,8 @@ export function createTimelapse({ api, colormap }) {
 
     if (!measured) {
       ui.specChart.replaceChildren();
+      ui.specReset.hidden = true;
+      ui.specHint.textContent = "";
       ui.specLegend.replaceChildren();
       ui.specTable.replaceChildren();
       ui.specHead.textContent = "";
@@ -487,81 +616,196 @@ export function createTimelapse({ api, colormap }) {
       return;
     }
 
-    const W = ui.specChart.clientWidth || 380, H = 200, m = { l: 44, r: 10, t: 24, b: 30 };
+    const W = ui.specChart.clientWidth || 380, H = 240, m = { l: 48, r: 12, t: 16, b: 30 };
     const all = list.flatMap((v) => v.points);
-    // The plot spans the detectors that are loaded, so one detector's measurements fill its width
-    // instead of huddling in a corner of the full 0.75–5 µm range.
-    const dets = [...new Set(all.map((p) => p.det))].map((d) => DETECTORS[d - 1]);
-    const lo = Math.min(...dets.map((d) => d.lo), ...all.map((p) => p.wl)), hi = Math.max(...dets.map((d) => d.hi), ...all.map((p) => p.wl));
-    const x0 = lo - (hi - lo) * 0.04, x1 = hi + (hi - lo) * 0.04;
-    const yMax = Math.max(...all.map((p) => p.flux)) * 1.12, yMin = Math.min(0, ...all.map((p) => p.flux));
-    const X = (wl) => m.l + ((wl - x0) / (x1 - x0)) * (W - m.l - m.r);
-    const Y = (f) => H - m.b - ((f - yMin) / (yMax - yMin || 1)) * (H - m.t - m.b);
-    const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img",
-      "aria-label": "Spectrum: brightness in millijansky against wavelength in microns, one line per visit" });
-
-    // Recessive grid: 4 horizontal lines with values, and up to 8 wavelength marks.
-    const stepRaw = (yMax - yMin) / 4, mag = 10 ** Math.floor(Math.log10(stepRaw)), yStep = [1, 2, 5, 10].map((k) => k * mag).find((s) => s >= stepRaw);
-    const fmt = (v) => (Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2)).replace(/\.0+$/, "");
-    for (let v = Math.ceil(yMin / yStep) * yStep; v <= yMax; v += yStep) {
-      root.append(svg("line", { x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), class: v === 0 ? "sp-axis" : "sp-grid" }));
-      root.append(svg("text", { x: m.l - 6, y: Y(v) + 3.5, class: "sp-label", "text-anchor": "end" }, fmt(v)));
+    // Wavelengths where exposures exist but none could be measured (saturated or off the image
+    // edge): shaded, so a gap in the lines reads as "no data here", not as the object going dark.
+    const gaps = [];
+    {
+      const exps = [];
+      for (const det of Object.keys(state.data)) for (const e of state.data[det].exposures) exps.push(e);
+      exps.sort((a, b) => a.wl - b.wl);
+      // A run of skipped exposures with no measurement between them. Lone skips (one exposure off
+      // the image edge) don't count, and a run never reaches past the measurements on either side.
+      let run = [], prev = -Infinity;
+      const close = (next) => {
+        if (run.length >= 3) {
+          const a = Math.max(run[0].wl - run[0].bw / 2, prev), b = Math.min(run.at(-1).wl + run.at(-1).bw / 2, next);
+          if (b - a >= 0.06) gaps.push({ a, b });
+        }
+        run = [];
+      };
+      for (const e of exps) {
+        if (e.flux == null) run.push(e);
+        else { close(e.wl); prev = e.wl; }
+      }
+      close(Infinity);
     }
-    const xStep = [0.1, 0.2, 0.5, 1].find((s) => (x1 - x0) / s <= 8) || 1;
+    // The full view spans the loaded detectors, so one detector's measurements fill its width
+    // instead of huddling in a corner of the full 0.75–5 µm range.
+    const dets = [...new Set(Object.keys(state.data).map(Number))].map((d) => DETECTORS[d - 1]);
+    const lo = Math.min(...dets.map((d) => d.lo), ...all.map((p) => p.wl)), hi = Math.max(...dets.map((d) => d.hi), ...all.map((p) => p.wl));
+    const full = { x0: lo - (hi - lo) * 0.03, x1: hi + (hi - lo) * 0.03 };
+    const zoom = state.specZoom?.target === state.target ? state.specZoom : null;
+    const { x0, x1 } = zoom || full;
+    // Brightness range: from zero in the full view; hugging the visible points when zoomed in.
+    const seen = all.filter((p) => p.wl >= x0 && p.wl <= x1);
+    const fs = (seen.length ? seen : all).flatMap((p) => (zoom && p.err ? [p.flux - p.err, p.flux + p.err] : [p.flux]));
+    let yMin = Math.min(...fs), yMax = Math.max(...fs);
+    if (!zoom) { yMin = Math.min(0, yMin); yMax *= 1.08; }
+    else { const pad = (yMax - yMin || Math.abs(yMax) * 0.1 || 1) * 0.12; yMin -= pad; yMax += pad; }
+    const pw = W - m.l - m.r, ph = H - m.t - m.b;
+    const X = (wl) => m.l + ((wl - x0) / (x1 - x0)) * pw;
+    const Y = (f) => H - m.b - ((f - yMin) / (yMax - yMin || 1)) * ph;
+    const wlAt = (px) => x0 + ((px - m.l) / pw) * (x1 - x0);
+    const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img",
+      "aria-label": "Spectrum: brightness in millijansky against wavelength in microns, one line per visit. Drag across it to zoom in." });
+    const clipId = "sp-clip";
+    const defs = svg("defs");
+    const clip = svg("clipPath", { id: clipId }); clip.append(svg("rect", { x: m.l, y: m.t - 6, width: pw, height: ph + 6 }));
+    const hatch = svg("pattern", { id: "sp-hatch", width: 6, height: 6, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" });
+    hatch.append(svg("line", { x1: 0, y1: 0, x2: 0, y2: 6, class: "sp-hatch-line" }));
+    defs.append(clip, hatch);
+    root.append(defs);
+
+    for (const g of gaps) {
+      const a = Math.max(X(g.a), m.l), b = Math.min(X(g.b), W - m.r);
+      if (b - a < 1) continue;
+      const r = svg("rect", { x: a, y: m.t, width: b - a, height: ph, class: "sp-gap" });
+      r.append(svg("title", {}, `${g.a.toFixed(2)}–${g.b.toFixed(2)} µm: not measured (too bright, so the detector saturated, or at the image edge)`));
+      root.append(r);
+      if (b - a > 96) root.append(svg("text", { x: (a + b) / 2, y: H - m.b - 10, class: "sp-gap-label", "text-anchor": "middle" }, "not measured"));
+    }
+
+    // Recessive grid: about 4 brightness lines, and wavelength marks at a round step.
+    const nice = (raw) => { const mag = 10 ** Math.floor(Math.log10(raw)); return [1, 2, 2.5, 5, 10].map((k) => k * mag).find((s) => s >= raw); };
+    const yStep = nice((yMax - yMin) / 4);
+    const num = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
+    const fmt = (v) => num.format(Math.abs(v) >= 100 ? Math.round(v) : Math.abs(v) >= 10 ? Math.round(v * 10) / 10 : v);
+    for (let v = Math.ceil(yMin / yStep) * yStep; v <= yMax + 1e-9; v += yStep) {
+      const y = Y(v);
+      if (y < m.t - 1) continue;
+      root.append(svg("line", { x1: m.l, x2: W - m.r, y1: y, y2: y, class: Math.abs(v) < yStep / 1e6 ? "sp-axis" : "sp-grid" }));
+      root.append(svg("text", { x: m.l - 7, y: y + 3.5, class: "sp-label", "text-anchor": "end" }, fmt(Math.abs(v) < yStep / 1e6 ? 0 : v)));
+    }
+    const xStep = nice((x1 - x0) / 7);
+    const xDec = Math.max(0, -Math.floor(Math.log10(xStep) + 1e-9) + (String(xStep).includes("25") ? 1 : 0));
     for (let k = Math.ceil(x0 / xStep - 1e-9); k * xStep <= x1 + 1e-9; k++) {
       const wl = k * xStep;
       root.append(svg("line", { x1: X(wl), x2: X(wl), y1: H - m.b, y2: H - m.b + 4, class: "sp-axis" }));
-      root.append(svg("text", { x: X(wl), y: H - m.b + 16, class: "sp-label", "text-anchor": "middle" }, xStep < 1 ? wl.toFixed(1) : String(wl)));
+      root.append(svg("text", { x: X(wl), y: H - m.b + 16, class: "sp-label", "text-anchor": "middle" }, wl.toFixed(xDec)));
     }
     root.append(svg("line", { x1: m.l, x2: W - m.r, y1: H - m.b, y2: H - m.b, class: "sp-axis" }));
     root.append(svg("text", { x: W - m.r, y: H - 2, class: "sp-label", "text-anchor": "end" }, "wavelength (µm)"));
-    root.append(svg("text", { x: 4, y: 10, class: "sp-label" }, "mJy"));
+    root.append(svg("text", { x: m.l - 7, y: m.t - 5, class: "sp-label", "text-anchor": "end" }, "mJy"));
 
-    // One line per visit and detector (a line never bridges a detector that isn't loaded).
+    // One line per visit and detector (a line never bridges a detector that isn't loaded, or a gap).
+    const plot = svg("g", { "clip-path": `url(#${clipId})` });
+    root.append(plot);
+    const gapBetween = (a, b) => gaps.some((g) => g.a > a.wl && g.b < b.wl);
     for (const v of list) {
+      const color = colorOf(v.id);
       const byDet = new Map();
       for (const p of v.points) (byDet.get(p.det) || byDet.set(p.det, []).get(p.det)).push(p);
       for (const pts of byDet.values()) {
-        if (pts.length > 1) root.append(svg("path", { d: pts.map((p, i) => `${i ? "L" : "M"}${X(p.wl).toFixed(1)} ${Y(p.flux).toFixed(1)}`).join(""),
-          class: "sp-line", stroke: colorOf(v.id), "stroke-dasharray": dashOf(v.id) }));
-        for (const p of pts) root.append(svg("circle", { cx: X(p.wl), cy: Y(p.flux), r: pts.length > 1 ? 1.8 : 4, fill: colorOf(v.id), class: "sp-dot" }));
+        const d = pts.map((p, i) => `${i && !gapBetween(pts[i - 1], p) ? "L" : "M"}${X(p.wl).toFixed(1)} ${Y(p.flux).toFixed(1)}`).join("");
+        if (pts.length > 1) plot.append(svg("path", { d, class: "sp-line", stroke: color, "stroke-dasharray": dashOf(v.id) }));
+        for (const p of pts) {
+          // Error bars only where they are big enough to see (in practice, once zoomed in).
+          if (p.err && Y(p.flux - p.err) - Y(p.flux + p.err) >= 3) {
+            plot.append(svg("line", { x1: X(p.wl), x2: X(p.wl), y1: Y(p.flux - p.err), y2: Y(p.flux + p.err), class: "sp-err", stroke: color }));
+          }
+          // A measurement with no neighbours gets a ring, so it reads as a real point, not a stray mark.
+          plot.append(svg("circle", { cx: X(p.wl), cy: Y(p.flux), r: pts.length > 1 ? (zoom ? 2.6 : 1.9) : 3.2, fill: color, class: pts.length > 1 ? "sp-dot" : "sp-dot lone" }));
+        }
       }
     }
 
     // Hover: a hairline snaps to the nearest measured wavelength and lists every visit there.
     const hair = svg("line", { y1: m.t, y2: H - m.b, class: "sp-hair", visibility: "hidden" });
     const marks = svg("g", {});
-    root.append(hair, marks);
-    const wls = [...new Set(all.map((p) => p.wl))].sort((a, b) => a - b);
-    const showAt = (clientX) => {
-      const box = root.getBoundingClientRect(), wl = x0 + ((clientX - box.left - m.l) / (W - m.l - m.r)) * (x1 - x0);
+    const brush = svg("rect", { y: m.t, height: ph, class: "sp-brush", visibility: "hidden" });
+    root.append(hair, marks, brush);
+    const wls = [...new Set(seen.map((p) => p.wl))].sort((a, b) => a - b);
+    const hideTip = () => { hair.setAttribute("visibility", "hidden"); marks.replaceChildren(); ui.specTip.hidden = true; };
+    const showAt = (px) => {
+      if (!wls.length) return hideTip();
+      const wl = wlAt(px);
       const near = wls.reduce((a, b) => (Math.abs(b - wl) < Math.abs(a - wl) ? b : a));
       hair.setAttribute("x1", X(near)); hair.setAttribute("x2", X(near)); hair.setAttribute("visibility", "visible");
       marks.replaceChildren();
       const rows = [];
+      const tol = Math.max(0.004, Math.min(0.06, (x1 - x0) / 60));
       for (const v of list) {
         const p = v.points.reduce((a, b) => (Math.abs(b.wl - near) < Math.abs(a.wl - near) ? b : a));
-        if (Math.abs(p.wl - near) > 0.06) continue;
+        if (Math.abs(p.wl - near) > tol) continue;
         marks.append(svg("circle", { cx: X(p.wl), cy: Y(p.flux), r: 4.5, fill: colorOf(v.id), class: "sp-mark" }));
         rows.push({ v, p });
       }
-      ui.specTip.replaceChildren(el("div", { className: "tip-head" }, `${near.toFixed(2)} µm`), ...rows.map(({ v, p }) => {
+      ui.specTip.replaceChildren(el("div", { className: "tip-head" }, `${near.toFixed(3)} µm`), ...rows.map(({ v, p }) => {
         const row = el("div", { className: "tip-row" });
         const key = el("i"); key.style.background = colorOf(v.id);
-        row.append(key, el("b", {}, `${fmt(p.flux)} mJy`), el("span", {}, fmtDate(p.mjd, { day: "numeric", month: "short", year: "numeric" })));
+        row.append(key, el("b", {}, `${fmt(p.flux)}${p.err ? ` ±${fmt(p.err)}` : ""} mJy`), el("span", {}, fmtDate(p.mjd, { day: "numeric", month: "short", year: "numeric" })));
         return row;
       }));
       ui.specTip.hidden = false;
-      const left = clamp(X(near) + 16, 0, W - 170);
-      ui.specTip.style.left = `${X(near) > W * 0.6 ? Math.max(0, X(near) - 176) : left}px`;
+      ui.specTip.style.left = `${X(near) > W * 0.55 ? Math.max(0, X(near) - 202) : clamp(X(near) + 16, 0, W - 196)}px`;
       // Sit in the half of the plot the points are not in, so the box never covers what it describes.
       const high = rows.reduce((sum, r) => sum + Y(r.p.flux), 0) / (rows.length || 1) < (m.t + H - m.b) / 2;
       ui.specTip.style.top = high ? "auto" : "14px";
       ui.specTip.style.bottom = high ? `${m.b + 12}px` : "auto";
     };
-    root.addEventListener("pointermove", (e) => showAt(e.clientX));
-    root.addEventListener("pointerleave", () => { hair.setAttribute("visibility", "hidden"); marks.replaceChildren(); ui.specTip.hidden = true; });
+
+    // Zoom: drag across the chart to pick a wavelength range; pinch (or ctrl + scroll) zooms
+    // around the pointer; a sideways swipe pans; double-click or "Reset zoom" goes back.
+    const MIN_SPAN = 0.01;
+    const setView = (a, b) => {
+      if (b - a < MIN_SPAN) { const c = (a + b) / 2; a = c - MIN_SPAN / 2; b = c + MIN_SPAN / 2; }
+      if (b - a >= (full.x1 - full.x0) * 0.98) { state.specZoom = null; renderSpectrum(); return; }
+      const shift = Math.max(0, full.x0 - a) - Math.max(0, b - full.x1);
+      state.specZoom = { target: state.target, x0: a + shift, x1: b + shift };
+      renderSpectrum();
+    };
+    const localX = (e) => (e.clientX - root.getBoundingClientRect().left) * (W / root.getBoundingClientRect().width);
+    let drag = null;
+    root.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      drag = { from: clamp(localX(e), m.l, W - m.r), id: e.pointerId };
+      root.setPointerCapture(e.pointerId);
+    });
+    root.addEventListener("pointermove", (e) => {
+      const px = localX(e);
+      if (!drag) return showAt(px);
+      const to = clamp(px, m.l, W - m.r);
+      if (Math.abs(to - drag.from) < 4) return;
+      hideTip();
+      brush.setAttribute("x", Math.min(drag.from, to)); brush.setAttribute("width", Math.abs(to - drag.from)); brush.setAttribute("visibility", "visible");
+    });
+    root.addEventListener("pointerup", (e) => {
+      if (!drag) return;
+      const to = clamp(localX(e), m.l, W - m.r), from = drag.from;
+      drag = null; brush.setAttribute("visibility", "hidden");
+      if (Math.abs(to - from) >= 8) setView(wlAt(Math.min(from, to)), wlAt(Math.max(from, to)));
+    });
+    root.addEventListener("pointercancel", () => { drag = null; brush.setAttribute("visibility", "hidden"); });
+    root.addEventListener("pointerleave", () => drag || hideTip());
+    root.addEventListener("dblclick", () => zoom && setView(full.x0, full.x1));
+    root.addEventListener("wheel", (e) => {
+      if (e.ctrlKey) { // trackpad pinch, or ctrl + scroll wheel
+        e.preventDefault();
+        const c = wlAt(clamp(localX(e), m.l, W - m.r)), k = Math.exp(clamp(e.deltaY, -50, 50) * 0.012);
+        setView(c - (c - x0) * k, c + (x1 - c) * k);
+      } else if (zoom && Math.abs(e.deltaX) > Math.abs(e.deltaY)) { // sideways swipe pans
+        e.preventDefault();
+        const d = (e.deltaX / pw) * (x1 - x0);
+        setView(x0 + d, x1 + d);
+      }
+    }, { passive: false });
     ui.specChart.replaceChildren(root);
+    ui.specReset.hidden = !zoom;
+    ui.specHint.textContent = zoom
+      ? `Showing ${x0.toFixed(3)}–${x1.toFixed(3)} µm. Double-click the chart to see it all again.`
+      : "Drag across the chart to zoom in on a range of wavelengths.";
 
     // Legend: one entry per visit (identity is never colour alone: each has its date).
     ui.specLegend.replaceChildren(...list.map((v) => {
@@ -613,12 +857,20 @@ export function createTimelapse({ api, colormap }) {
   // ---------------------------------------------------------------- wiring
   ui.fov.replaceChildren(...FOVS.map((f) => el("option", { value: f, selected: f === state.fov }, `${f}′ wide`)));
   ui.play.addEventListener("click", () => setPlaying(!state.playing));
+  ui.specReset.addEventListener("click", () => { state.specZoom = null; renderSpectrum(); });
   ui.prev.addEventListener("click", () => { setPlaying(false); step(-1); });
   ui.next.addEventListener("click", () => { setPlaying(false); step(1); });
   ui.speed.addEventListener("change", () => state.playing && setPlaying(true));
-  ui.bright.addEventListener("input", drawFrame);
-  ui.marker.addEventListener("change", drawFrame);
-  ui.gaia.addEventListener("change", () => (ui.gaia.checked && !state.gaia ? loadGaia() : drawFrame()));
+  ui.bright.addEventListener("input", drawAll);
+  ui.marker.addEventListener("change", drawAll);
+  ui.gaia.addEventListener("change", () => (ui.gaia.checked && !state.gaia ? loadGaia() : drawAll()));
+  // The WISE panel fetches nothing until it is opened; once opened it stays open for the next object.
+  try { ui.wise.open = localStorage.getItem(WISE_OPEN_KEY) === "1"; } catch {}
+  ui.wise.addEventListener("toggle", () => {
+    try { localStorage.setItem(WISE_OPEN_KEY, ui.wise.open ? "1" : "0"); } catch {}
+    if (ui.wise.open && state.target) loadWise();
+  });
+  ui.wRetry.addEventListener("click", () => loadWise());
   ui.retry.addEventListener("click", () => { state.held = false; load(state.det); });
   ui.specAll.addEventListener("click", () => DETECTORS.forEach(({ id }) => load(id, { show: false })));
   ui.mode.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
@@ -633,6 +885,7 @@ export function createTimelapse({ api, colormap }) {
     state.target = t;
     render();
     if (t && !held) load(state.det);
+    if (t && ui.wise.open) loadWise();
   });
   ui.stage.addEventListener("keydown", (e) => {
     if (e.key === "ArrowLeft") { setPlaying(false); step(-1); }
@@ -640,6 +893,7 @@ export function createTimelapse({ api, colormap }) {
     else if (e.key === " ") { e.preventDefault(); setPlaying(!state.playing); }
   });
   new ResizeObserver(() => state.target && (drawFrame(), renderTrack(), renderSpectrum())).observe(ui.stage);
+  new ResizeObserver(() => drawWise()).observe(ui.wStage);
 
-  return { show, clear, redraw: drawFrame, state };
+  return { show, clear, redraw: drawAll, state };
 }

@@ -5,6 +5,7 @@ Serves the frontend, the sky tiles and a small JSON API:
   GET /api/survey                 -> wavelengths, tile URL and release of the SPHEREx map
   GET /hips/<version>/<frame>/... -> the sky tiles themselves, cached on disk (see tiles.py)
   GET /api/timelapse?ra=&dec=...  -> the same patch on each SPHEREx visit (see timelapse.py)
+  GET /api/wise?ra=&dec=...       -> the same patch as the WISE telescope saw it in 2010 (see wise.py)
   GET /api/identify?ra=&dec=      -> what is at this spot (click on the map)
   GET /api/names/<level>/<band>/<cell> -> the best-known SIMBAD objects in one cell of the name grid ("Names" switch)
   GET /api/gaia?ra=&dec=&radius=  -> Gaia DR3 stars around a position ("Gaia stars" switches)
@@ -42,6 +43,7 @@ from fastapi.staticfiles import StaticFiles
 
 import tiles
 import timelapse
+import wise
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
@@ -148,6 +150,7 @@ app = FastAPI(title="Lumasphere API", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], allow_headers=["*"])
 app.include_router(tiles.router)
 app.include_router(timelapse.router)
+app.include_router(wise.router)
 
 
 class ResolveCache:

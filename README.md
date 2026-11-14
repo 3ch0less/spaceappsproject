@@ -40,6 +40,10 @@ them too. A time-lapse takes about 8 seconds the first time and is instant after
   something that moved, a lone dot brightened or faded.
 - **Options:** patch width (3′, 6′, 12′, 20′), speed, brightness, a marker showing where the catalog predicts the
   object on each date, and Gaia stars drawn at their positions for that date.
+- **WISE, 2010:** a fold-away panel under the flipbook showing the same patch as NASA's WISE telescope saw it about
+  16 years earlier, at the same size and orientation. Bands W1 and W2 (3.4 and 4.6 µm) are colors SPHEREx sees too;
+  W3 and W4 (12 and 22 µm) show cool dust. It follows the patch width, color style, brightness, marker and Gaia
+  switches above, and the marker shows where a fast star was in 2010.
 - **Spectrum:** brightness against wavelength, one line per visit, with a headline saying whether it changed.
   "Load the other detectors" fills in the full 0.75–5 µm range. "Show the numbers" gives the same data as a table.
 - **Planets and asteroids** move across the sky, so a fixed patch does not follow them. The panel says so and waits
@@ -65,7 +69,7 @@ frontend/ (plain HTML/CSS/JS, no build step)
   app.js        sky viewer (Aladin Lite v3), search, map clicks, wavelength slider, shareable URLs
   names.js      object names on the map: more of them the closer you zoom, never overlapping
   stars.js      Gaia stars on the map, on the same zoom grid: the brightest first, never crowded
-  timelapse.js  the flipbook, its timeline and the spectrum chart in the side panel
+  timelapse.js  the flipbook, its timeline, the WISE comparison and the spectrum chart in the side panel
 
 backend/ (Python FastAPI)
   main.py       GET /api/resolve?q=...            name or coords → sky position + facts
@@ -78,12 +82,14 @@ backend/ (Python FastAPI)
                 GET /api/warm                     "these tiles are needed soon" (look-ahead)
                 GET /api/cache                    cache statistics
   timelapse.py  GET /api/timelapse?ra=&dec=&fov=&det=   one image per visit + brightness per exposure
+  wise.py       GET /api/wise?ra=&dec=&fov=&band=       the same patch as WISE saw it in 2010
 ```
 
 | Piece | Source |
 |---|---|
 | Sky map | IRSA's SPHEREx DR1 all-sky HiPS cube (102 wavelength frames, 0.75–5.0 µm), fetched through `backend/tiles.py`. The upstream URL is `LUMASPHERE_HIPS_URL` (default: IRSA). Wavelengths, blank frames, date range and the release version are all read from its `properties` file, so a new release needs no code change |
 | Time-lapse images | SPHEREx level-2 exposures. IRSA's image search (SIA) lists the exposures covering a position; the pixels are read from NASA's public cloud copy (`nasa-irsa-spherex` on AWS), with IRSA itself as the fallback |
+| WISE comparison | AllWISE atlas images (2010), read from the HiPS tiles made by CDS: IRSA's copy first, CDS's as the fallback (`LUMASPHERE_WISE_HIPS`) |
 | Stars, galaxies, nebulae | CDS Sesame / SIMBAD (also gives distance and proper motion) |
 | Planets, asteroids, comets | NASA JPL Horizons (position today and path during the SPHEREx survey) |
 | Map clicks, Names overlay | SIMBAD's query service, through our backend |
