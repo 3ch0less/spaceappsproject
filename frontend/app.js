@@ -792,7 +792,7 @@ function renderSuggestions(text) {
   });
   if (q) {
     const li = el("li");
-    li.append(el("span", {}, `Search “${text.trim()}”`), el("small", {}, "star, planet, asteroid, coordinates…"));
+    li.append(el("span", {}, `Search “${text.trim()}”`), el("small", {}, "name, or RA Dec like 05h35m -05d23m"));
     li.onmousedown = (e) => { e.preventDefault(); search(text); };
     ul.prepend(li);
   }

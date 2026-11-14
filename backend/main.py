@@ -10,7 +10,7 @@ Serves the frontend, the sky tiles and a small JSON API:
   GET /api/gaia?ra=&dec=&radius=  -> Gaia DR3 stars around a position ("Gaia stars" switches)
 
 Resolution order:
-  1. Coordinates ("269.45 4.69", "17:57:48.5 +04:41:36", "08h55m10.8s -07d14m42s")
+  1. Coordinates ("269.45 4.69", "17:57:48.5 +04:41:36", "08h55m10.8s -07d14m42s", "RA 269.45 Dec 4.69")
   2. Planets / Moon / Pluto      -> JPL Horizons (moves, so we also return its path)
   3. Stars, galaxies, nebulae... -> CDS Sesame (SIMBAD/NED/VizieR name resolver)
   4. Asteroids / comets          -> JPL Horizons small-body lookup
@@ -185,10 +185,19 @@ _cache = ResolveCache()
 
 _COORD_HINT = re.compile(r"^[\s0-9+\-.:hdms°'\"]+$", re.IGNORECASE)
 _TWO_NUMBERS = re.compile(r"^\s*([+\-]?\d+(?:\.\d+)?)[\s,]+([+\-]?\d+(?:\.\d+)?)\s*$")
+# "RA 269.45 Dec 4.69", "ra=17:57:48 dec=+04:41:36", "α 269.45 δ 4.69": drop the labels.
+_COORD_LABEL = re.compile(r"(?<![a-z])(?:right\s+ascension|r\.?a\.?|declination|decl?\.?|α|δ)(?![a-z])\s*[:=]?\s*", re.IGNORECASE)
+# Typographic minus and prime marks (as copied from Wikipedia) -> the ASCII astropy reads.
+_TYPOGRAPHY = str.maketrans({"−": "-", "–": "-", "′": "'", "″": '"', "’": "'", "”": '"'})
+
+
+def normalize_coordinates(q: str) -> str:
+    """Strip RA/Dec labels and fancy punctuation, so the result is plain coordinates if q was."""
+    return _COORD_LABEL.sub(" ", q.translate(_TYPOGRAPHY)).strip()
 
 
 def parse_coordinates(q: str) -> SkyCoord | None:
-    text = q.strip().replace(",", " ")
+    text = normalize_coordinates(q).replace(",", " ")
     if not _COORD_HINT.match(text) or not re.search(r"\d", text):
         return None
     parts = text.split()
@@ -392,7 +401,7 @@ async def resolve(q: str = Query(..., min_length=1, max_length=120)):
     q = q.strip()
     # Two plain numbers are degrees. Off the sky they must not fall through to the name lookup,
     # where "10 120" would quietly turn into asteroid 10 Hygiea.
-    pair = _TWO_NUMBERS.match(q)
+    pair = _TWO_NUMBERS.match(normalize_coordinates(q))
     if pair and not (0 <= float(pair[1]) <= 360 and -90 <= float(pair[2]) <= 90):
         raise HTTPException(400, "Those coordinates are off the sky. Right ascension runs from 0 to 360 degrees, declination from -90 to +90.")
     key = q.lower()
