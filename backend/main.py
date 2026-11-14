@@ -6,7 +6,7 @@ Serves the frontend, the sky tiles and a small JSON API:
   GET /hips/<version>/<frame>/... -> the sky tiles themselves, cached on disk (see tiles.py)
   GET /api/timelapse?ra=&dec=...  -> the same patch on each SPHEREx visit (see timelapse.py)
   GET /api/identify?ra=&dec=      -> what is at this spot (click on the map)
-  GET /api/names?ra=&dec=&radius= -> the best-known SIMBAD objects around a position ("Names" switch)
+  GET /api/names/<level>/<band>/<cell> -> the best-known SIMBAD objects in one cell of the name grid ("Names" switch)
   GET /api/gaia?ra=&dec=&radius=  -> Gaia DR3 stars around a position ("Gaia stars" switches)
 
 Resolution order:
@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import json
 import math
 import re
 import time
@@ -35,7 +36,7 @@ from urllib.parse import quote
 import httpx
 from astropy import units as u
 from astropy.coordinates import SkyCoord
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -183,6 +184,7 @@ _cache = ResolveCache()
 # ---------------------------------------------------------------- coordinates
 
 _COORD_HINT = re.compile(r"^[\s0-9+\-.:hdms°'\"]+$", re.IGNORECASE)
+_TWO_NUMBERS = re.compile(r"^\s*([+\-]?\d+(?:\.\d+)?)[\s,]+([+\-]?\d+(?:\.\d+)?)\s*$")
 
 
 def parse_coordinates(q: str) -> SkyCoord | None:
@@ -366,7 +368,7 @@ async def lookup(q: str) -> dict | None:
     if coord is not None:
         return {
             "name": q,
-            "ra": coord.ra.deg,
+            "ra": coord.ra.deg % 360,
             "dec": coord.dec.deg,
             "kind": "coordinates",
             "type_label": "Sky position",
@@ -388,6 +390,11 @@ async def lookup(q: str) -> dict | None:
 @app.get("/api/resolve")
 async def resolve(q: str = Query(..., min_length=1, max_length=120)):
     q = q.strip()
+    # Two plain numbers are degrees. Off the sky they must not fall through to the name lookup,
+    # where "10 120" would quietly turn into asteroid 10 Hygiea.
+    pair = _TWO_NUMBERS.match(q)
+    if pair and not (0 <= float(pair[1]) <= 360 and -90 <= float(pair[2]) <= 90):
+        raise HTTPException(400, "Those coordinates are off the sky. Right ascension runs from 0 to 360 degrees, declination from -90 to +90.")
     key = q.lower()
     hit = _cache.get(key)
     if hit is None:
@@ -484,7 +491,7 @@ class DayCache:
         return value
 
 
-_gaia_cache, _names_cache = DayCache(), DayCache()
+_gaia_cache = DayCache()
 
 
 @app.get("/api/gaia")
@@ -497,24 +504,102 @@ async def gaia(ra: float = Query(..., ge=0, lt=360), dec: float = Query(..., ge=
         key, {"epoch": GAIA_EPOCH, "stars": await gaia_cone(ra, dec, radius, limit), "source": "ESA Gaia DR3"})
 
 
-@app.get("/api/names")
-async def names(ra: float = Query(..., ge=0, lt=360), dec: float = Query(..., ge=-90, le=90),
-                radius: float = Query(0.25, gt=0, le=1, description="degrees"), limit: int = Query(200, ge=1, le=500)):
-    """Named objects around a position for the map's "Names" switch. A crowded field holds tens
-    of thousands of catalogued objects, so the most written-about ones come first."""
-    key = f"{ra:.4f}|{dec:.4f}|{radius:.4f}|{limit}"
-    hit = _names_cache.get(key)
-    if hit:
-        return hit
-    # "nbref + 0": sorting on the bare column makes SIMBAD walk its popularity index instead of
-    # its sky index, which takes 20 s in a sparse field. Planets are skipped: they sit exactly on
-    # their star, so their labels would only pile up on top of it.
-    adql = (f"SELECT TOP {limit} main_id, otype, ra, dec, pmra, pmdec, nbref + 0 AS refs FROM basic "
-            f"WHERE CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', {ra:.6f}, {dec:.6f}, {radius:.6f})) = 1 "
-            "AND otype NOT IN ('Pl', 'Pl?') ORDER BY refs DESC")
-    rows = await first_good(tap_csv(url, adql, timeout=10) for url in SIMBAD_TAP)
+# ---------------------------------------------------------------- names on the map
+# The "Names" switch works like the labels of a street map. The sky is cut into a grid for
+# each zoom level: 12 cells of 60 degrees at level 0, and every level halves the cell size.
+# Each cell holds its few best-known objects, so a wide view shows the famous things spread
+# evenly over the sky, and zooming in brings in the next tier. A cell never changes, so it is
+# fetched from SIMBAD once and kept on disk. frontend/names.js cuts the sky the same way.
+NAME_LEVELS = 10                         # deepest level: cells of 3.5 arcminutes
+NAMES_TTL = 30 * 86400                   # SIMBAD's ranking of what is well known shifts slowly
+NAMES_DIR = tiles.CACHE_DIR / "names"
+FAMOUS_LEVELS = 2                        # levels 0..2 are cut from one list of the sky's best-known objects
+FAMOUS_COUNT = 20000                     # long enough that every cell of those levels gets its full share (measured: 28 at least)
+_names_slots = asyncio.Semaphore(3)      # SIMBAD slows down clients that send more than a few queries a second; a view needs about ten cells
+_names_pending: dict[str, asyncio.Task] = {}
+_famous: list[dict] | None = None
+_famous_lock = asyncio.Lock()
+
+
+async def famous_objects() -> list[dict] | None:
+    """SIMBAD's best-known objects over the whole sky, best first. One query of about 2 s, kept on
+    disk; cells as wide as a constellation take minutes' worth of SIMBAD time if asked one by one."""
+    global _famous
+    async with _famous_lock:
+        if _famous is None:
+            path = NAMES_DIR / "famous.json"
+            try:
+                if time.time() - path.stat().st_mtime < NAMES_TTL:
+                    _famous = json.loads(await asyncio.to_thread(path.read_text))
+            except (OSError, ValueError):
+                pass
+        if _famous is None:
+            adql = (f"SELECT TOP {FAMOUS_COUNT} main_id, otype, ra, dec, pmra, pmdec, nbref AS refs FROM basic "
+                    "WHERE ra IS NOT NULL AND otype NOT IN ('Pl', 'Pl?') ORDER BY nbref DESC")
+            rows = await first_good(tap_csv(url, adql, timeout=30) for url in SIMBAD_TAP)
+            if rows:
+                _famous = rows
+                await asyncio.to_thread(tiles._atomic_write, path, json.dumps(rows).encode())
+        return _famous
+
+
+def names_per_cell(level: int) -> int:
+    """Wide views get a short list per cell; the last levels list close to everything."""
+    return {8: 16, 9: 30, 10: 60}.get(level, 10)
+
+
+def name_cell(level: int, band: int, cell: int) -> tuple[float, float, float, float] | None:
+    """(ra_min, ra_max, dec_min, dec_max) of a grid cell, or None if there is no such cell.
+    Bands of equal height in declination, each cut into roughly square cells."""
+    height = 60 / 2 ** level
+    if not 0 <= band < 3 * 2 ** level:
+        return None
+    dec_min = -90 + band * height
+    count = max(1, math.floor(360 * math.cos((dec_min + height / 2) * math.pi / 180) / height + 0.5))
+    if not 0 <= cell < count:
+        return None
+    return cell * 360 / count, (cell + 1) * 360 / count, dec_min, dec_min + height
+
+
+def separation(ra1: float, dec1: float, ra2: float, dec2: float) -> float:
+    a1, d1, a2, d2 = (math.radians(v) for v in (ra1, dec1, ra2, dec2))
+    c = math.sin(d1) * math.sin(d2) + math.cos(d1) * math.cos(d2) * math.cos(a1 - a2)
+    return math.degrees(math.acos(max(-1.0, min(1.0, c))))
+
+
+async def load_name_cell(level: int, box: tuple[float, float, float, float]) -> list[dict]:
+    ra_min, ra_max, dec_min, dec_max = box
+    keep = names_per_cell(level)
+    if level <= FAMOUS_LEVELS and (famous := await famous_objects()):
+        inside = (r for r in famous if (a := num(r, "ra")) is not None and (d := num(r, "dec")) is not None
+                  and ra_min <= a < ra_max and dec_min <= d < dec_max)
+        return name_objects([r for _, r in zip(range(keep), inside)])
+    # The circle around the cell lets SIMBAD use its sky index; the plain limits cut it down to
+    # the cell itself, so a famous neighbour just outside cannot crowd this cell's own objects out.
+    ra_c, dec_c = (ra_min + ra_max) / 2, (dec_min + dec_max) / 2
+    radius = 1.01 * max(separation(ra_c, dec_c, r, d) for r in (ra_min, ra_max) for d in (dec_min, dec_max))
+    where = (f"WHERE CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', {ra_c:.6f}, {dec_c:.6f}, {radius:.6f})) = 1 "
+             f"AND ra >= {ra_min:.7f} AND ra < {ra_max:.7f} AND dec >= {dec_min:.7f} AND dec < {dec_max:.7f} "
+             "AND otype NOT IN ('Pl', 'Pl?')")  # planets sit exactly on their star: their labels would only pile up on it
+    columns = f"SELECT TOP {keep} main_id, otype, ra, dec, pmra, pmdec"
+    # SIMBAD can sort by "number of papers" two ways and each is slow where the other is fast
+    # (measured: up to 30 s against under 1 s). Sorting on the bare column walks its popularity
+    # list, quick when the circle is big; "nbref + 0" searches the circle first, quick when it is small.
+    by_popularity = f"{columns}, nbref AS refs FROM basic {where} ORDER BY nbref DESC"
+    by_place = f"{columns}, nbref + 0 AS refs FROM basic {where} ORDER BY refs DESC"
+    rows = None
+    for adql in ((by_popularity, by_place) if radius >= 1.5 else (by_place, by_popularity)):
+        async with _names_slots:
+            rows = await first_good(tap_csv(url, adql, timeout=9) for url in SIMBAD_TAP)
+        if rows is not None:
+            break
     if rows is None:
         raise HTTPException(502, "SIMBAD did not answer. Try again in a moment.")
+    return name_objects(rows)
+
+
+def name_objects(rows: list[dict]) -> list[dict]:
+    """SIMBAD rows -> what the map draws: tidy name, position when SPHEREx looked, how well known."""
     years = survey_span()[2] - 2000.0  # SIMBAD positions are for the year 2000; fast stars have moved since
     objects = []
     for r in rows:
@@ -525,8 +610,32 @@ async def names(ra: float = Query(..., ge=0, lt=360), dec: float = Query(..., ge
         if math.hypot(pm_ra, pm_dec) > 50:  # same rule as describe(): faster than 0.05 arcsec a year
             at_ra = (at_ra + pm_ra * years / 3.6e6 / max(1e-6, math.cos(math.radians(at_dec)))) % 360
             at_dec += pm_dec * years / 3.6e6
-        objects.append({"name": tidy_name(r["main_id"]), "ra": round(at_ra, 6), "dec": round(at_dec, 6), "type": OTYPE_LABELS.get(r.get("otype", ""), "")})
-    return _names_cache.put(key, {"objects": objects, "source": "SIMBAD"})
+        objects.append({"name": tidy_name(r["main_id"]), "ra": round(at_ra, 6), "dec": round(at_dec, 6),
+                        "type": OTYPE_LABELS.get(r.get("otype", ""), ""), "refs": int(num(r, "refs") or 0)})
+    return objects
+
+
+@app.get("/api/names/{level}/{band}/{cell}")
+async def names(level: int, band: int, cell: int, response: Response):
+    """The best-known named objects in one cell of the name grid, most written-about first."""
+    box = name_cell(level, band, cell) if 0 <= level <= NAME_LEVELS else None
+    if box is None:
+        raise HTTPException(404, "There is no such cell in the name grid.")
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    key = f"{level}/{band}_{cell}"
+    path = NAMES_DIR / f"{key}.json"
+    try:
+        if time.time() - path.stat().st_mtime < NAMES_TTL:
+            return json.loads(await asyncio.to_thread(path.read_text))
+    except (OSError, ValueError):
+        pass
+    task = _names_pending.get(key)  # neighbouring browsers (or a double request) share one SIMBAD query
+    if task is None:
+        task = _names_pending[key] = asyncio.create_task(load_name_cell(level, box))
+        task.add_done_callback(lambda t: (_names_pending.pop(key, None), t.cancelled() or t.exception()))
+    result = {"objects": await asyncio.shield(task), "source": "SIMBAD"}
+    await asyncio.to_thread(tiles._atomic_write, path, json.dumps(result).encode())
+    return result
 
 
 @app.get("/api/identify")

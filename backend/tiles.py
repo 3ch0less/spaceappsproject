@@ -391,7 +391,7 @@ def _tree_size(root: Path) -> int:
 def _prune_tree(root: Path, target_bytes: int, keep_version: str | None) -> int:
     """Delete other releases first, then least-recently-used files, until we fit. Returns bytes left."""
     for child in root.iterdir():
-        if child.is_dir() and child.name not in (keep_version, "timelapse"):
+        if child.is_dir() and child.name not in (keep_version, "timelapse", "names"):
             shutil.rmtree(child, ignore_errors=True)
     files = []
     for e in _walk_files(root):

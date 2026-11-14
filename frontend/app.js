@@ -10,6 +10,7 @@
  */
 
 import { createTimelapse } from "./timelapse.js";
+import { createNames } from "./names.js";
 
 // Keep in sync with the <link rel="modulepreload"> in index.html.
 const ALADIN_URL = "https://cdn.jsdelivr.net/npm/aladin-lite@3.8.2/dist/aladin.js";
@@ -73,6 +74,7 @@ let frame = 0;            // the wavelength frame the UI is asking for
 let colormap = "magma";
 let targetOverlay, targetCatalog;
 let timelapse;            // the flipbook + spectrum in the inspector (timelapse.js)
+let names;                // object labels on the map (names.js)
 let current = null;       // last resolved target
 let sweeping = false;     // wavelength sweep animation
 let drifting = false;     // slow auto-rotate on the welcome screen
@@ -469,7 +471,6 @@ function showTarget(t, fovOverride, { fly = true } = {}) {
     targetOverlay.add(A.polyline(t.path.map((p) => [p.ra, p.dec]), { color: "#7dd3fc", lineWidth: 2 }));
   }
   targetCatalog.addSources([A.source(t.ra, t.dec, { name: t.name })]);
-  unstackTargetLabel();
   if (t.catalog_ra != null) {
     // Where catalogs put it in 2000 vs where SPHEREx saw it: the star has moved!
     targetOverlay.add(A.polyline([[t.catalog_ra, t.catalog_dec], [t.ra, t.dec]], { color: "#ffe08a", lineWidth: 2, lineDash: [4, 4] }));
@@ -568,24 +569,16 @@ function renderInfo(t) {
 }
 
 // ------------------------------------------------------------------ overlays
-// Catalog markers around the view centre. They come from our backend (/api/names, /api/gaia)
-// rather than from Aladin's built-in catalog loaders, which talk to the CDS servers in
-// Strasbourg directly and show nothing when those are down. `at` remembers where the last
-// query was made so we only query again when the view has really moved away from it.
+// Gaia stars around the view centre, from our backend (/api/gaia) rather than Aladin's built-in
+// catalog loaders, which talk to the CDS servers in Strasbourg directly and show nothing when
+// those are down. `at` remembers where the last query was made so we only query again when
+// the view has really moved away from it. (The Names switch has its own module, names.js.)
 let clickedMarker = null; // the marker under a click; Aladin reports it just before the click itself
 const markerClicked = (source) => (clickedMarker = { ra: source.ra, dec: source.dec, at: performance.now() });
 const OVERLAYS = {
-  names: {
-    toggle: "#tg-names", label: "Names", maxRadius: 1, cat: null, at: null, request: null,
-    url: (ra, dec, radius) => `${API}/api/names?ra=${ra}&dec=${dec}&radius=${radius}&limit=80`,
-    rows: (data) => data.objects.map((o) => [o.ra, o.dec, { name: o.name, type: o.type }]),
-    style: {
-      name: "Names (SIMBAD)", color: "#a3f0c6", sourceSize: 10,
-      displayLabel: true, labelColumn: "name", labelColor: "#d6ffe9", labelFont: "12px Inter, sans-serif",
-    },
-  },
   gaia: {
-    toggle: "#tg-gaia", label: "Gaia stars", maxRadius: 0.25, cat: null, at: null, request: null,
+    // Gaia lists over a billion stars: wider than maxFov they would only be a solid blob in the middle.
+    toggle: "#tg-gaia", label: "Gaia stars", maxRadius: 0.25, maxFov: 3, cat: null, at: null, request: null,
     url: (ra, dec, radius) => `${API}/api/gaia?ra=${ra}&dec=${dec}&radius=${radius}&limit=2000`,
     // Gaia measured each star in 2016; draw it where its motion had carried it when SPHEREx looked.
     rows: (data) => {
@@ -618,9 +611,16 @@ async function refreshOverlay(key, where) {
     const [ra, dec] = aladin.getRaDec();
     where = { ra, dec, fov: aladin.getFov()[0] };
   }
+  o.request?.abort(); // only the newest place matters
+  if (where.fov > o.maxFov) {
+    // Too far out: take the markers away and come back when the view is zoomed in again.
+    removeCatalog(o.cat);
+    o.cat = o.request = null;
+    o.at = { ra: where.ra, dec: where.dec, radius: where.fov / 2 };
+    return;
+  }
   const radius = Math.min(o.maxRadius, where.fov / 2);
   o.at = { ra: where.ra, dec: where.dec, radius };
-  o.request?.abort(); // only the newest place matters
   const request = (o.request = new AbortController());
   try {
     const r = await fetch(o.url(where.ra.toFixed(5), where.dec.toFixed(5), radius.toFixed(4)), { signal: request.signal });
@@ -633,18 +633,9 @@ async function refreshOverlay(key, where) {
     removeCatalog(o.cat); // the old markers stayed until now, so they don't blink
     aladin.addCatalog(cat);
     o.cat = cat;
-    unstackTargetLabel();
   } catch (e) {
     if (e.name === "AbortError" || o.request !== request) return;
     toast(`${o.label} couldn't be loaded: the star catalog didn't answer. Switch it off and on to try again.`, 5000);
-  }
-}
-
-// The selected object carries its own label; hide the Names marker sitting on the same spot.
-function unstackTargetLabel() {
-  for (const s of OVERLAYS.names.cat?.sources || []) {
-    const onTarget = !!current && angularDistance(s.ra, s.dec, current.ra, current.dec) < 3 / 3600;
-    if (onTarget === s.isShowing) onTarget ? s.hide() : s.show();
   }
 }
 
@@ -665,7 +656,8 @@ function refreshOverlaysIfMoved() {
     const radius = Math.min(o.maxRadius, fov / 2);
     const moved = angularDistance(ra, dec, o.at.ra, o.at.dec) > o.at.radius * 0.5;
     const rescaled = radius > o.at.radius * 1.5 || radius < o.at.radius / 2;
-    if (moved || rescaled) refreshOverlay(key, { ra, dec, fov });
+    const tooWide = fov > o.maxFov && o.cat; // zoomed out past the point where its markers make sense
+    if (moved || rescaled || tooWide) refreshOverlay(key, { ra, dec, fov });
   }
 }
 
@@ -692,12 +684,15 @@ function stopIdleDrift() { drifting = false; }
 function syncUrl() {
   clearTimeout(urlTimer);
   urlTimer = setTimeout(() => {
+    // q = a named object, ra + dec = a position being inspected, view = only where the camera points.
     const p = new URLSearchParams();
-    if (current?.query) p.set("q", current.query);
+    if (current?.kind === "coordinates") {
+      p.set("ra", current.ra.toFixed(5));
+      p.set("dec", current.dec.toFixed(5));
+    } else if (current?.query) p.set("q", current.query);
     else {
       const [ra, dec] = aladin.getRaDec();
-      p.set("ra", ra.toFixed(5));
-      p.set("dec", dec.toFixed(5));
+      p.set("view", `${ra.toFixed(5)}_${dec.toFixed(5)}`);
     }
     p.set("fov", aladin.getFov()[0].toFixed(3));
     p.set("wl", wavelengths[frame].toFixed(3));
@@ -705,17 +700,32 @@ function syncUrl() {
   }, 400);
 }
 
-// ?ra=…&dec=…&fov=… opens directly on that patch of sky (no detour via the Milky Way).
+// ?ra=…&dec=… is a position to inspect: it opens the time-lapse of that patch, which is what
+// lets other sites link to or embed one. Decimal degrees, or anything the search box accepts
+// (?ra=08h55m10.8s&dec=-07d14m42s).
+function urlPosition() {
+  const ra = urlParams.get("ra")?.trim(), dec = urlParams.get("dec")?.trim();
+  return ra && dec ? `${ra} ${dec}` : null;
+}
+
+// Where the camera starts. A link with a position or a saved view opens directly on that
+// patch of sky (no detour via the Milky Way).
 function initialView() {
-  const ra = parseFloat(urlParams.get("ra")), dec = parseFloat(urlParams.get("dec"));
-  if (urlParams.get("q") || !Number.isFinite(ra) || !Number.isFinite(dec)) return START;
-  return { ra, dec, fov: parseFloat(urlParams.get("fov")) || 1 };
+  if (urlParams.get("q")) return START; // a named object: search() flies there
+  const fov = parseFloat(urlParams.get("fov"));
+  const onSky = (ra, dec) => Number.isFinite(ra) && Number.isFinite(dec) && Math.abs(dec) <= 90;
+  if (urlPosition()) {
+    const ra = Number(urlParams.get("ra")), dec = Number(urlParams.get("dec")); // NaN unless plain degrees
+    return onSky(ra, dec) ? { ra, dec, fov: fov || fovFor({}) } : START;
+  }
+  const [ra, dec] = (urlParams.get("view") || "").split(/[_, ]+/).map(Number);
+  return onSky(ra, dec) ? { ra, dec, fov: fov || 1 } : START;
 }
 
 function applyUrlState() {
   if (!hasUrlState) return;
   $("#welcome").hidden = true;
-  const q = urlParams.get("q");
+  const q = urlParams.get("q") || urlPosition();
   if (q) search(q, FEATURED.find((x) => x.q === q) || null, parseFloat(urlParams.get("fov")) || null);
 }
 
@@ -776,6 +786,7 @@ function wireControls() {
   for (const key in OVERLAYS) {
     $(OVERLAYS[key].toggle).addEventListener("change", (e) => (e.target.checked ? refreshOverlay(key) : clearOverlay(key)));
   }
+  $("#tg-names").addEventListener("change", (e) => names.setEnabled(e.target.checked));
 
   $("#welcome-close").addEventListener("click", () => ($("#welcome").hidden = true));
   $("#info-close").addEventListener("click", () => openInspector(false));
@@ -783,7 +794,8 @@ function wireControls() {
     const marker = clickedMarker && performance.now() - clickedMarker.at < 300 ? clickedMarker : null;
     clickedMarker = null;
     if (e.isDragging) return;
-    if (marker) inspectAt(marker.ra, marker.dec, 5); // a Names / Gaia marker: that object, not its neighbour
+    const named = marker || names.at(e.x, e.y);
+    if (named) inspectAt(named.ra, named.dec, 5); // a name or a Gaia marker: that object, not its neighbour
     else if (Number.isFinite(e.ra) && Number.isFinite(e.dec)) inspectAt(e.ra, e.dec);
   });
   $("#act-zoom").addEventListener("click", () => current && aladin.zoomToFoV(Math.max(0.15, aladin.getFov()[0] / 3), 1.2));
@@ -857,6 +869,11 @@ targetCatalog = A.catalog({
 aladin.addCatalog(targetCatalog);
 
 timelapse = createTimelapse({ api: API, colormap: () => colormap });
+names = createNames({
+  api: API, aladin, target: () => (document.body.classList.contains("has-panel") ? current : null),
+  avoid: ".brand, .search, .dock, .welcome, .inspector, .toast",
+  onError: () => toast("Some names couldn't be loaded: the catalog didn't answer. They are retried as you move around.", 5000),
+});
 watchTiles();
 updateWavelengthUi();
 wireControls();
@@ -865,4 +882,4 @@ applyUrlState();
 warmFeatured();
 
 // Handy for debugging in the browser console.
-window.skyshift = { get aladin() { return aladin; }, get layer() { return sky.shown.hips; }, sky, survey, timelapse, setFrame: showFrame, search, inspectAt, tilesInView, tilesAround, healpixTile };
+window.skyshift = { get aladin() { return aladin; }, get layer() { return sky.shown.hips; }, sky, survey, timelapse, names, setFrame: showFrame, search, inspectAt, tilesInView, tilesAround, healpixTile };

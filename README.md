@@ -61,13 +61,14 @@ What to expect from the challenge's test targets:
 frontend/ (plain HTML/CSS/JS, no build step)
   index.html    layout
   style.css     look & feel, including the phone layout
-  app.js        sky viewer (Aladin Lite v3), search, map clicks, wavelength slider, overlays, shareable URLs
+  app.js        sky viewer (Aladin Lite v3), search, map clicks, wavelength slider, Gaia overlay, shareable URLs
+  names.js      object names on the map: more of them the closer you zoom, never overlapping
   timelapse.js  the flipbook, its timeline and the spectrum chart in the side panel
 
 backend/ (Python FastAPI)
   main.py       GET /api/resolve?q=...            name or coords → sky position + facts
                 GET /api/identify?ra=&dec=        what is at this spot (a click on the map)
-                GET /api/names?ra=&dec=&radius=   best-known named objects nearby ("Names" switch)
+                GET /api/names/<level>/<band>/<cell>   best-known named objects in one cell of the name grid ("Names" switch)
                 GET /api/gaia?ra=&dec=&radius=    Gaia DR3 stars nearby ("Gaia stars" switches)
   tiles.py      GET /hips/<version>/<frame>/...   sky tiles, one HiPS per wavelength, cached on disk
                 GET /api/survey                   wavelengths, blank frames, release version
@@ -121,21 +122,31 @@ backend/ (Python FastAPI)
   asking IRSA, nothing is hard-coded. Frame index = 17·(detector−1) + (channel−1).
 - The deepest tile level is HiPS order 5 (about 13″ per pixel), so below roughly 2° field of view you are looking at
   magnified pixels. The time-lapse panel shows the sharper individual exposures.
-- Shareable links: `?q=Barnard's Star`, or `?ra=…&dec=…&fov=…&wl=1.66`.
+- Shareable links: `?q=Barnard's Star` opens a named object and `?ra=133.795&dec=-7.245` opens the time-lapse of that
+  position (decimal degrees, or `?ra=08h55m10.8s&dec=-07d14m42s`). Both take `&fov=` (map width in degrees) and
+  `&wl=` (wavelength in µm). A link with only `?view=…` restores the camera without selecting anything.
 
 **Catalogs**
 - **Nothing in the browser talks to the CDS servers in Strasbourg.** They were down while this was built
   (HTTP 404), which broke Aladin's built-in Names and Gaia overlays. The backend now asks SIMBAD's Strasbourg and
   Harvard sites side by side and uses whichever answers first, with a 10-second limit, and gets Gaia from ESA.
-- **Names shows the 80 most written-about objects in view**, not the nearest ones. A crowded field holds tens of
-  thousands of catalogued objects.
-- Clicking a Names or Gaia marker opens that exact object in the side panel.
+- **Names work like place names on a street map.** Far out you see a few famous objects spread over the view
+  (M 42, M 31, the LMC); each zoom step brings in the next tier; at the closest zoom everything catalogued is
+  there. Two labels never overlap: the better-known one is written and the other shows as a small dot until
+  zooming in makes room. Markers sit exactly on their objects, and no label hides under the search bar or the dock.
+- **How:** the sky is cut into a grid per zoom level (12 cells of 60° at level 0, each level halves the cell, down
+  to 3.5′ at level 10), and a cell holds its best-known objects by number of papers in SIMBAD. A view needs about
+  ten cells. Cells are cached in the page, by the browser and in `backend/.cache/names/` (30 days), so panning
+  back costs nothing. The three widest levels are cut from one list of the sky's 20,000 best-known objects.
+  The first visit to an uncached area takes a few seconds, because SIMBAD needs about a second per cell.
+- **Gaia stars only show when zoomed in** (view narrower than 3°); wider than that they would be a solid blob.
+- Clicking a name (the text or its marker) or a Gaia marker opens that exact object in the side panel.
 
 ### Settings (environment variables, all optional)
 | Variable | Default | Meaning |
 |---|---|---|
 | `SKYSHIFT_HIPS_URL` | IRSA SPHEREx all-sky cube | Upstream HiPS cube to mirror |
-| `SKYSHIFT_CACHE_DIR` | `backend/.cache` | Where tiles and time-lapses are kept. Safe to delete at any time |
+| `SKYSHIFT_CACHE_DIR` | `backend/.cache` | Where tiles, time-lapses and name cells are kept. Safe to delete at any time |
 | `SKYSHIFT_CACHE_GB` | `5` | Disk budget for the cache |
 | `SKYSHIFT_SPHEREX_COLLECTIONS` | `spherex_dr1,spherex_qr3` | Data releases searched for exposures, most trusted first. Add the next release here when IRSA publishes it |
 | `SKYSHIFT_SPHEREX_CLOUD` | `https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com/` | Cloud copy the exposures are read from |
