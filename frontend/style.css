@@ -488,6 +488,10 @@ body.has-panel .toast { left: calc((100vw - var(--panel-w)) / 2); max-width: cal
 .aladin-logo-container { opacity: 0.45; }
 .aladin-location, .aladin-status-bar { display: none !important; }
 .aladin-widgets-toolbar.aladin-anchor-left.aladin-anchor-top { top: auto !important; bottom: 36px !important; left: 12px !important; }
+/* Snapshot of the sky held over the map while a new wavelength loads (app.js holdFrame). */
+.sky-hold { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 5; pointer-events: none; opacity: 1; }
+.sky-hold.fading { opacity: 0; transition: opacity 0.2s ease-out; }
+.sky-hold[hidden] { display: none; }
 #sky .aladin-fov { font-family: var(--font) !important; font-stretch: 88%; color: var(--ink-2) !important; }
 
 /* ---------- narrower windows ---------- */

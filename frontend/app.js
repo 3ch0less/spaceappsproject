@@ -263,7 +263,8 @@ function makeLayer(k) {
   // Aladin reads the rest (tile size, depth, frame) from `${url}/properties`, which the
   // browser caches for good, so creating a layer costs no network round trip after the first.
   // seen: tiles that finished downloading; lastTile: when the latest good one did; bad: tiles that came back as errors
-  const rec = { frame: k, hips: null, tilePrefix: `${url}/Norder`, seen: new Set(), lastTile: 0, bad: 0, failed: false, addedAt: performance.now() };
+  // allsky: when the low-resolution whole-sky image arrived (all Aladin draws when zoomed far out)
+  const rec = { frame: k, hips: null, tilePrefix: `${url}/Norder`, seen: new Set(), lastTile: 0, allsky: 0, bad: 0, failed: false, addedAt: performance.now() };
   rec.hips = A.HiPS(url, {
     name: `SPHEREx ${wavelengths[k].toFixed(2)} µm`,
     imgFormat: survey.format,
@@ -297,8 +298,10 @@ function watchTiles() {
     for (const rec of [sky.pending, sky.shown]) {
       if (!rec) continue;
       for (const e of list.getEntries()) {
-        // Only real tiles count; the big all-sky preview trails in later and isn't worth waiting for.
-        if (!e.name.startsWith(rec.tilePrefix) || !e.name.includes("/Npix")) continue;
+        if (!e.name.startsWith(rec.tilePrefix)) continue;
+        // Zoomed far out, Aladin draws only the one all-sky image, so that is what we wait for there.
+        if (e.name.includes("/Allsky")) { if (e.responseStatus < 400) rec.allsky = performance.now(); continue; }
+        if (!e.name.includes("/Npix")) continue;
         rec.seen.add(e.name);
         if (e.responseStatus >= 400) rec.bad++;
         else rec.lastTile = performance.now();
@@ -307,12 +310,15 @@ function watchTiles() {
   }).observe({ type: "resource" });
 }
 
+const ALLSKY_DECODE_MS = 250; // a 1.3 MB all-sky PNG still has to be decoded and uploaded to the GPU
+
 function layerOnScreen(rec) {
   const now = performance.now();
+  const view = tilesInView();
+  if (view && (view.order < 3 || !view.pix.length)) return rec.allsky > 0 && now - rec.allsky > ALLSKY_DECODE_MS;
   if (!rec.lastTile) return now - rec.addedAt > 2500 && !("PerformanceObserver" in window);
   if (now - rec.lastTile < FADE_MS) return false;      // last tile is still fading in
   if (now - rec.lastTile > 1500) return true;          // nothing more is coming
-  const view = tilesInView();
   return !view || view.pix.every((p) => rec.seen.has(tileUrl(rec.frame, view.order, p)));
 }
 
@@ -325,13 +331,14 @@ function waitForLayer(rec) {
       if (document.hidden) rec.addedAt += now - last;
       last = now;
       const age = now - rec.addedAt;
-      if (rec.failed || (rec.bad && !rec.lastTile && age > 2000)) return resolve("failed");
+      const arrived = rec.lastTile || rec.allsky;
+      if (rec.failed || (rec.bad && !arrived && age > 2000)) return resolve("failed");
       if (rec.hips.added) {
         if (layerOnScreen(rec)) return resolve("ready");
         // Once its tiles have started arriving it is quicker to finish than to start over.
-        if (frame !== rec.frame && age > IMPATIENT_MS && !rec.lastTile) return resolve("unwanted");
+        if (frame !== rec.frame && age > IMPATIENT_MS && !arrived) return resolve("unwanted");
       }
-      if (age > GIVE_UP_MS) return resolve(rec.lastTile ? "ready" : "failed");
+      if (age > GIVE_UP_MS) return resolve(arrived ? "ready" : "failed");
       setTimeout(tick, 40);
     };
     tick();
@@ -348,7 +355,52 @@ function dropLayer(rec) {
   } catch {}
 }
 
+// Hold the last frame: while a new wavelength loads, a snapshot of the sky as it was sits on top
+// of the map, so a layer that is still decoding (which Aladin paints black) is never seen. It
+// fades out once the new layer is drawn, and disappears at once if the user drags or zooms.
+const hold = { img: null, ticket: 0, timer: 0 };
+const HOLD_MAX_MS = 4000; // never freeze the view longer than this
+
+async function holdFrame() {
+  const ticket = ++hold.ticket; // always a fresh snapshot: the one fading out may show an older colour
+  let url;
+  try { url = await aladin.getViewDataURL({ format: "image/jpeg", logo: false }); } catch { return; }
+  if (ticket !== hold.ticket || !url) return; // released (or the view moved) while capturing
+  if (!hold.img) {
+    hold.img = el("img", { className: "sky-hold", alt: "" });
+    hold.img.setAttribute("aria-hidden", "true");
+    $("#sky").append(hold.img);
+  }
+  hold.img.src = url;
+  await hold.img.decode().catch(() => {});
+  if (ticket !== hold.ticket) return;
+  hold.img.classList.remove("fading");
+  hold.img.hidden = false;
+  clearTimeout(hold.timer);
+  hold.timer = setTimeout(() => releaseFrame(), HOLD_MAX_MS);
+}
+
+function releaseFrame(instant = false) {
+  hold.ticket++;
+  clearTimeout(hold.timer);
+  const img = hold.img;
+  if (!img || img.hidden) return;
+  if (instant) { img.hidden = true; return; }
+  img.classList.add("fading");
+  hold.timer = setTimeout(() => { img.hidden = true; img.classList.remove("fading"); }, 220);
+}
+
 async function swapLayers() {
+  await holdFrame();
+  try { await swapLoop(); }
+  finally {
+    // Give the new layer a frame or two on screen before uncovering it.
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    releaseFrame();
+  }
+}
+
+async function swapLoop() {
   while (sky.shown.frame !== frame) {
     const rec = makeLayer(frame);
     sky.pending = rec;
@@ -372,6 +424,17 @@ async function swapLayers() {
     updateWavelengthUi();
   }
   scheduleNeighbourWarm();
+}
+
+// The all-sky images of the next few wavelengths, fetched into the browser's cache ahead of time
+// (about 1.3 MB each; the server sends them as never-changing, so each is fetched only once).
+const prefetched = new Set();
+function prefetchAllsky(frames) {
+  for (const k of frames) {
+    if (blankFrames.has(k) || prefetched.has(k)) continue;
+    prefetched.add(k);
+    fetch(`${tileBase}/${k}/Norder3/Allsky.${survey.format}`, { priority: "low" }).catch(() => prefetched.delete(k));
+  }
 }
 
 // Ask for wavelength frame i. Resolves (true = shown) once the sky has caught up.
@@ -405,12 +468,14 @@ async function toggleSweep() {
     // Have the backend fetch the frames after this one while we show it.
     const ahead = [next];
     for (let i = 0; i < 4; i++) ahead.push(nextFrame(ahead.at(-1)));
-    warm(ahead.slice(1), tilesInView());
+    warm(ahead.slice(1), tilesInView(), true);
+    prefetchAllsky(ahead.slice(0, 3));
     const ok = await showFrame(next, false);
     if (!ok && frame === before) break; // it could not load: stop instead of retrying forever
     await sleep(Math.max(0, SWEEP_MS - (performance.now() - started)));
   }
   sweeping = false;
+  releaseFrame();
   setIcon(btn, "play");
   btn.setAttribute("aria-label", "Sweep through all infrared colors");
   syncUrl();
@@ -1045,6 +1110,7 @@ function wireControls() {
   });
 
   const viewChanged = () => {
+    if (!drifting) releaseFrame(true); // a held snapshot would no longer line up with the sky
     if (drifting) return;
     syncUrl();
     scheduleNeighbourWarm();
