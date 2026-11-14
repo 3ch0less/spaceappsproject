@@ -61,7 +61,7 @@ const STOPS = {
   grayscale: [[0, 0, 0], [255, 255, 255]],
 };
 const lutCache = {};
-function lut(name) {
+export function lut(name) {
   if (lutCache[name]) return lutCache[name];
   const stops = STOPS[name] || STOPS.magma, out = new Uint8ClampedArray(256 * 3);
   for (let i = 0; i < 256; i++) {
@@ -71,7 +71,7 @@ function lut(name) {
   return (lutCache[name] = out);
 }
 
-function decodeImage(b64, size) {
+export function decodeImage(b64, size) {
   const bin = atob(b64), bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   const img = new Float32Array(bytes.buffer);
@@ -178,7 +178,9 @@ export function createTimelapse({ api, colormap }) {
     reset();
     state.target = target;
     // Cold brown dwarfs only glow at the longest wavelengths; everything else is sharpest around 1.3 µm.
-    state.det = /brown dwarf/i.test(target.type_label || "") ? 6 : 2;
+    // Measured on WISE 0855 and Epsilon Indi B: both are clearest in detector 5 (3.8-4.4 µm).
+    // A featured target can name the detector that shows it best (app.js FEATURED).
+    state.det = target.det || (/brown dwarf/i.test(target.type_label || "") ? 5 : 2);
     state.held = !auto;
     ui.section.hidden = ui.specSec.hidden = false;
     ui.gaia.checked = false;
@@ -442,6 +444,43 @@ export function createTimelapse({ api, colormap }) {
   }
 
   // ---------------------------------------------------------------- spectrum
+  // Did it change between visits? Detector by detector (each detector sees the same colours on
+  // every visit), visit median against visit median, and only a difference well beyond the
+  // scatter of the measurements counts: a faint source's noise must not read as a change.
+  // A star too bright to measure (saturated) is judged by the glow around it instead.
+  function changeHeadline() {
+    let best = null, tested = false;
+    for (const det of Object.keys(state.data).map(Number)) {
+      const d = state.data[det];
+      const key = d.exposures.some((e) => e.flux != null) ? "flux" : "halo";
+      const per = d.visits.map((v) => {
+        const f = d.exposures.filter((e) => e.visit === v.id && e[key] != null).map((e) => e[key]).sort((a, b) => a - b);
+        if (f.length < 3) return null;
+        const mid = f[Math.floor(f.length / 2)];
+        const mad = f.map((x) => Math.abs(x - mid)).sort((a, b) => a - b)[Math.floor(f.length / 2)];
+        return { v, m: mid, se: (1.25 * 1.4826 * mad) / Math.sqrt(f.length) }; // standard error of a median
+      }).filter(Boolean);
+      if (per.length < 2) continue;
+      tested = true;
+      const hi = per.reduce((a, b) => (b.m > a.m ? b : a)), lo = per.reduce((a, b) => (b.m < a.m ? b : a));
+      if (lo.m <= 0) continue;
+      const change = hi.m / lo.m - 1, real = hi.m - lo.m > 3 * Math.hypot(hi.se, lo.se);
+      // The glow around a saturated star depends on where the star fell on the detector, too:
+      // steady Barnard's Star shows glow changes of up to 80%. Only a doubling counts there.
+      const enough = key === "halo" ? 1.0 : 0.1;
+      if (real && change >= enough && (!best || change > best.change)) best = { change, hi, lo, det, halo: key === "halo" };
+    }
+    if (!tested) return "";
+    if (!best) return "No clear change: the differences between visits are within the measurement scatter.";
+    // Different colours can change in different directions, so name where the biggest change is.
+    const when = (v) => fmtDate(v.mjd, { month: "short", year: "numeric" });
+    if (best.halo) {
+      return `Probably changed: its glow was ${(best.change + 1).toFixed(1)}× as bright in ${when(best.hi.v)} as in ${when(best.lo.v)}, at ${DETECTORS[best.det - 1].range}`
+        + " (too bright to measure directly, so this is judged from the light around it, which is less certain).";
+    }
+    return `Changed between visits: up to ${Math.round(best.change * 100)}% brighter in ${when(best.hi.v)} than in ${when(best.lo.v)}, at ${DETECTORS[best.det - 1].range}.`;
+  }
+
   // Brightness of the target in every exposure, against that exposure's wavelength.
   // One line per visit: where the lines differ, the object changed between visits.
   function spectrumData() {
@@ -479,10 +518,10 @@ export function createTimelapse({ api, colormap }) {
       ui.specChart.replaceChildren();
       ui.specLegend.replaceChildren();
       ui.specTable.replaceChildren();
-      ui.specHead.textContent = "";
+      ui.specHead.textContent = changeHeadline();
       ui.specNote.textContent = !loaded
         ? "The spectrum appears once the time-lapse has loaded."
-        : total ? "This object is too bright here: it saturates SPHEREx's detector, so its brightness can't be measured. Try another detector."
+        : total ? "This object is too bright here: it saturates SPHEREx's detector, so its full brightness (and spectrum) can't be measured. Any change above is judged from the glow around it."
         : "No measurements at this spot yet.";
       return;
     }
@@ -572,29 +611,7 @@ export function createTimelapse({ api, colormap }) {
       return item;
     }));
 
-    // Headline: did it change between visits? Compare visits detector by detector (same wavelengths).
-    let headline = "";
-    if (list.length > 1) {
-      let best = null;
-      for (const det of Object.keys(state.data).map(Number)) {
-        const med = list.map((v) => {
-          const f = v.points.filter((p) => p.det === det).map((p) => p.flux).sort((a, b) => a - b);
-          return f.length >= 3 ? { v, m: f[Math.floor(f.length / 2)] } : null;
-        }).filter(Boolean);
-        if (med.length < 2) continue;
-        const hiV = med.reduce((a, b) => (b.m > a.m ? b : a)), loV = med.reduce((a, b) => (b.m < a.m ? b : a));
-        if (loV.m <= 0) continue;
-        const change = hiV.m / loV.m - 1;
-        if (!best || change > best.change) best = { change, hiV, loV, det };
-      }
-      if (best && best.change >= 0.1) {
-        // Different colours can change in different directions, so name where the biggest change is.
-        headline = `Changed between visits: up to ${Math.round(best.change * 100)}% brighter in ${fmtDate(best.hiV.v.mjd, { month: "short", year: "numeric" })} than in ${fmtDate(best.loV.v.mjd, { month: "short", year: "numeric" })}, at ${DETECTORS[best.det - 1].range}.`;
-      } else if (best) {
-        headline = "Steady: its brightness changed by less than 10% between visits.";
-      }
-    }
-    ui.specHead.textContent = headline;
+    ui.specHead.textContent = changeHeadline();
     ui.specNote.textContent = `${measured} measurements from ${loaded} of 6 detectors. Brightness is summed within ${state.data[Object.keys(state.data)[0]].aperture_arcsec}″ of the source; treat values as approximate.`
       + (measured < total ? ` ${total - measured} exposures were skipped (saturated or at the image edge).` : "");
 
