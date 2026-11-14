@@ -18,9 +18,9 @@ and served with a one-year immutable Cache-Control, so the browser keeps it too.
 lands, the version changes and every cache layer starts fresh on its own.
 
 Settings (environment variables):
-    SKYSHIFT_HIPS_URL    upstream HiPS cube (default: IRSA SPHEREx all-sky cube)
-    SKYSHIFT_CACHE_DIR   where tiles are kept (default: backend/.cache)
-    SKYSHIFT_CACHE_GB    disk budget; least recently used tiles are deleted beyond it (default 5)
+    LUMASPHERE_HIPS_URL    upstream HiPS cube (default: IRSA SPHEREx all-sky cube)
+    LUMASPHERE_CACHE_DIR   where tiles are kept (default: backend/.cache)
+    LUMASPHERE_CACHE_GB    disk budget; least recently used tiles are deleted beyond it (default 5)
 """
 
 from __future__ import annotations
@@ -40,13 +40,13 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 
-log = logging.getLogger("skyshift.tiles")
+log = logging.getLogger("lumasphere.tiles")
 
 UPSTREAM = os.environ.get(
-    "SKYSHIFT_HIPS_URL", "https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube"
+    "LUMASPHERE_HIPS_URL", "https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube"
 ).rstrip("/")
-CACHE_DIR = Path(os.environ.get("SKYSHIFT_CACHE_DIR") or Path(__file__).resolve().parent / ".cache")
-CACHE_MAX_BYTES = int(float(os.environ.get("SKYSHIFT_CACHE_GB", "5")) * 1e9)
+CACHE_DIR = Path(os.environ.get("LUMASPHERE_CACHE_DIR") or Path(__file__).resolve().parent / ".cache")
+CACHE_MAX_BYTES = int(float(os.environ.get("LUMASPHERE_CACHE_GB", "5")) * 1e9)
 
 SURVEY_TTL = 15 * 60        # how often we look for a new data release (seconds)
 MISSING_TTL = 60 * 60       # how long an upstream 404 is remembered
@@ -150,7 +150,7 @@ class TileStore:
         self.client = httpx.AsyncClient(
             limits=httpx.Limits(max_connections=UPSTREAM_SLOTS, max_keepalive_connections=UPSTREAM_SLOTS, keepalive_expiry=120),
             timeout=httpx.Timeout(15, connect=6),
-            headers={"User-Agent": "SkyShift-tile-cache/1.0"},
+            headers={"User-Agent": "Lumasphere-tile-cache/1.0"},
             follow_redirects=True,
         )
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -512,7 +512,7 @@ async def properties(version: str, frame: int):
     _check_frame(s, frame)
     wl = s.wavelengths_um[frame]
     lines = {
-        "creator_did": f"ivo://skyshift/spherex/{s.version}/frame{frame}",
+        "creator_did": f"ivo://lumasphere/spherex/{s.version}/frame{frame}",
         "obs_title": f"{s.title}: {wl:g} um (frame {frame})",
         "dataproduct_type": "image",
         "hips_version": "1.4",

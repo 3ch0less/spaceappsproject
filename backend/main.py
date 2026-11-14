@@ -1,4 +1,4 @@
-"""SkyShift backend.
+"""Lumasphere backend.
 
 Serves the frontend, the sky tiles and a small JSON API:
   GET /api/resolve?q=<anything>   -> where is it on the sky + what is it
@@ -133,7 +133,7 @@ http: httpx.AsyncClient  # one shared connection pool for the name resolvers (SI
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     global http
-    http = httpx.AsyncClient(timeout=25, headers={"User-Agent": "SkyShift/1.0"})
+    http = httpx.AsyncClient(timeout=25, headers={"User-Agent": "Lumasphere/1.0"})
     await tiles.store.start()
     await timelapse.start()
     try:
@@ -144,7 +144,7 @@ async def lifespan(_app: FastAPI):
         await http.aclose()
 
 
-app = FastAPI(title="SkyShift API", lifespan=lifespan)
+app = FastAPI(title="Lumasphere API", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], allow_headers=["*"])
 app.include_router(tiles.router)
 app.include_router(timelapse.router)
@@ -634,6 +634,77 @@ async def names(level: int, band: int, cell: int, response: Response):
         task = _names_pending[key] = asyncio.create_task(load_name_cell(level, box))
         task.add_done_callback(lambda t: (_names_pending.pop(key, None), t.cancelled() or t.exception()))
     result = {"objects": await asyncio.shield(task), "source": "SIMBAD"}
+    await asyncio.to_thread(tiles._atomic_write, path, json.dumps(result).encode())
+    return result
+
+
+# ---------------------------------------------------------------- Gaia stars on the map
+# The "Gaia stars" switch uses the same grid as the names. Each cell holds its brightest Gaia
+# stars, so a wide view shows the bright stars spread evenly over the sky and zooming in brings
+# in fainter ones, instead of thousands of markers piled on the middle of the view. Gaia DR3
+# never changes, so a cell is fetched once and kept on disk. frontend/stars.js draws them.
+STARS_DIR = tiles.CACHE_DIR / "stars"
+STARS_PER_CELL = {9: 40, 10: 100}  # the usual 24, and more in the last two levels: there is no deeper level to bring the rest in
+# Down to level 7 a cell is found through a brightness limit, which the archive answers in about
+# two seconds whatever the cell's size (measured; searching a wide cell by position alone takes
+# over a minute in the Milky Way). The limits are generous: even the emptiest sky fills its cell.
+# From level 8 on the cells are small enough to search by position, with no limit at all.
+STAR_MAG_LIMIT = {0: 6.5, 1: 7.5, 2: 9.0, 3: 10.5, 4: 12.0, 5: 13.0, 6: 14.5, 7: 16.0}
+_stars_slots = asyncio.Semaphore(4)  # a view needs about ten cells; the archive is happy with a few at a time
+_stars_pending: dict[str, asyncio.Task] = {}
+
+
+async def load_star_cell(level: int, box: tuple[float, float, float, float]) -> list[dict]:
+    ra_min, ra_max, dec_min, dec_max = box
+    where = f"ra >= {ra_min:.7f} AND ra < {ra_max:.7f} AND dec >= {dec_min:.7f} AND dec < {dec_max:.7f}"
+    if level in STAR_MAG_LIMIT:
+        where += f" AND phot_g_mean_mag < {STAR_MAG_LIMIT[level]}"
+    else:
+        ra_c, dec_c = (ra_min + ra_max) / 2, (dec_min + dec_max) / 2
+        radius = 1.01 * max(separation(ra_c, dec_c, r, d) for r in (ra_min, ra_max) for d in (dec_min, dec_max))
+        where = f"1 = CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', {ra_c:.6f}, {dec_c:.6f}, {radius:.6f})) AND {where}"
+    rows = None
+    for url, table in GAIA_TAP:  # one after the other: the fallback is much slower
+        adql = (f"SELECT TOP {STARS_PER_CELL.get(level, 24)} source_id, ra, dec, pmra, pmdec, phot_g_mean_mag FROM {table} "
+                f"WHERE {where} ORDER BY phot_g_mean_mag")
+        try:
+            async with _stars_slots:
+                rows = await tap_csv(url, adql, timeout=20)
+            break
+        except (httpx.HTTPError, IndexError, ValueError):
+            continue
+    if rows is None:
+        raise HTTPException(502, "The Gaia archive did not answer. Try again in a moment.")
+    years = survey_span()[2] - GAIA_EPOCH  # Gaia measured each star in 2016; put it where SPHEREx saw it
+    stars = []
+    for r in rows:
+        at_ra, at_dec = num(r, "ra"), num(r, "dec")
+        if at_ra is None or at_dec is None:
+            continue
+        at_ra = (at_ra + (num(r, "pmra") or 0.0) * years / 3.6e6 / max(1e-6, math.cos(math.radians(at_dec)))) % 360
+        at_dec += (num(r, "pmdec") or 0.0) * years / 3.6e6
+        stars.append({"id": r["source_id"], "ra": round(at_ra, 6), "dec": round(at_dec, 6), "g": num(r, "phot_g_mean_mag")})
+    return stars
+
+
+@app.get("/api/stars/{level}/{band}/{cell}")
+async def stars(level: int, band: int, cell: int, response: Response):
+    """The brightest Gaia DR3 stars in one cell of the name grid, brightest first."""
+    box = name_cell(level, band, cell) if 0 <= level <= NAME_LEVELS else None
+    if box is None:
+        raise HTTPException(404, "There is no such cell in the grid.")
+    response.headers["Cache-Control"] = "public, max-age=604800"
+    key = f"{level}/{band}_{cell}"
+    path = STARS_DIR / f"{key}.json"
+    try:
+        return json.loads(await asyncio.to_thread(path.read_text))
+    except (OSError, ValueError):
+        pass
+    task = _stars_pending.get(key)  # a double request shares one archive query
+    if task is None:
+        task = _stars_pending[key] = asyncio.create_task(load_star_cell(level, box))
+        task.add_done_callback(lambda t: (_stars_pending.pop(key, None), t.cancelled() or t.exception()))
+    result = {"stars": await asyncio.shield(task), "source": "ESA Gaia DR3"}
     await asyncio.to_thread(tiles._atomic_write, path, json.dumps(result).encode())
     return result
 

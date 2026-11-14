@@ -1,4 +1,4 @@
-/* SkyShift time-lapse: the flipbook, its timeline and the spectrum chart in the inspector.
+/* Lumasphere time-lapse: the flipbook, its timeline and the spectrum chart in the inspector.
  *
  * SPHEREx returns to every spot about every six months. The backend (/api/timelapse)
  * turns each visit into one clean image per detector; this file plays those images like
@@ -148,7 +148,7 @@ export function createTimelapse({ api, colormap }) {
       if (show && state.det === det) state.visit = 0;
     } catch (e) {
       if (e.name === "AbortError" || token !== state.token) return;
-      state.errors[det] = /Failed to fetch|Load failed|NetworkError/i.test(e.message) ? "Couldn't reach the SkyShift backend." : e.message;
+      state.errors[det] = /Failed to fetch|Load failed|NetworkError/i.test(e.message) ? "Couldn't reach the Lumasphere backend." : e.message;
     } finally {
       if (token === state.token) { delete state.loading[det]; render(); if (state.data[det] && state.det === det && !state.playing) autoPlay(); }
     }

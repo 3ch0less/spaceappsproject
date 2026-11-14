@@ -1,4 +1,4 @@
-/* SkyShift frontend.
+/* Lumasphere frontend.
  *
  * The sky is rendered with Aladin Lite v3. NASA's SPHEREx all-sky map has 102 wavelength
  * frames; our backend serves each frame as its own ordinary HiPS image survey (see
@@ -11,6 +11,7 @@
 
 import { createTimelapse } from "./timelapse.js";
 import { createNames } from "./names.js";
+import { createStars } from "./stars.js";
 
 // Keep in sync with the <link rel="modulepreload"> in index.html.
 const ALADIN_URL = "https://cdn.jsdelivr.net/npm/aladin-lite@3.8.2/dist/aladin.js";
@@ -93,10 +94,11 @@ const MARK = { target: "#fc3d21", catalog: "#c9d6ec", path: "#7db3ff", gaia: "#f
 let targetOverlay, targetCatalog;
 let timelapse;            // the flipbook + spectrum in the inspector (timelapse.js)
 let names;                // object labels on the map (names.js)
+let stars;                // Gaia stars on the map (stars.js)
 let current = null;       // last resolved target
 let sweeping = false;     // wavelength sweep animation
 let drifting = false;     // slow auto-rotate on the welcome screen
-let urlTimer, viewTimer, searchTicket = 0;
+let urlTimer, searchTicket = 0;
 const urlParams = new URLSearchParams(location.search);
 const hasUrlState = [...urlParams.keys()].length > 0; // (URLSearchParams.size is missing in older Safari)
 
@@ -119,7 +121,7 @@ function uncaught(err) {
   //    browser words a failed request differently: Chrome "Failed to fetch", Safari
   //    "Load failed", Firefox "NetworkError when attempting to fetch resource".
   if (!msg || /^Script error\.?$|Failed to fetch|Load failed|NetworkError|AladinLiteLogger|^HiPS .* error|ResizeObserver loop/i.test(msg)) return;
-  if (booted) return console.error("SkyShift: uncaught error (the page keeps running)", err);
+  if (booted) return console.error("Lumasphere: uncaught error (the page keeps running)", err);
   showFatal(err);
 }
 
@@ -131,7 +133,7 @@ function showFatal(err) {
   if (/webgl/i.test(msg)) {
     help = "This sky viewer needs WebGL2 (3D graphics). In Chrome go to Settings → System, turn on “Use graphics acceleration when available”, relaunch, then check chrome://gpu shows WebGL2 as “Hardware accelerated”.";
   } else if (/backend/i.test(msg)) {
-    help = "The SkyShift backend isn't answering. Start it from the backend/ folder with the command below, then reload this page.";
+    help = "The Lumasphere backend isn't answering. Start it from the backend/ folder with the command below, then reload this page.";
     command = "uvicorn main:app --port 8000";
   } else if (/import|module|dynamically/i.test(msg)) {
     help = "The sky viewer library couldn't be downloaded from cdn.jsdelivr.net. Check your internet connection or whether a network filter is blocking it.";
@@ -559,7 +561,6 @@ function showTarget(t, fovOverride, { fly = true } = {}) {
     // Start fetching the destination's tiles now; the flight there takes a few seconds anyway.
     warm([frame], tilesAround(t.ra, t.dec, fov), true);
     flyTo(t.ra, t.dec, fov);
-    for (const key in OVERLAYS) refreshOverlay(key, { ra: t.ra, dec: t.dec, fov });
   }
   syncUrl();
 }
@@ -694,99 +695,6 @@ function markSwatch(mark) {
   return root;
 }
 
-// ------------------------------------------------------------------ overlays
-// Gaia stars around the view centre, from our backend (/api/gaia) rather than Aladin's built-in
-// catalog loaders, which talk to the CDS servers in Strasbourg directly and show nothing when
-// those are down. `at` remembers where the last query was made so we only query again when
-// the view has really moved away from it. (The Names switch has its own module, names.js.)
-let clickedMarker = null; // the marker under a click; Aladin reports it just before the click itself
-const markerClicked = (source) => (clickedMarker = { ra: source.ra, dec: source.dec, at: performance.now() });
-const OVERLAYS = {
-  gaia: {
-    // Gaia lists over a billion stars: wider than maxFov they would only be a solid blob in the middle.
-    toggle: "#tg-gaia", label: "Gaia stars", maxRadius: 0.25, maxFov: 3, cat: null, at: null, request: null,
-    url: (ra, dec, radius) => `${API}/api/gaia?ra=${ra}&dec=${dec}&radius=${radius}&limit=2000`,
-    // Gaia measured each star in 2016; draw it where its motion had carried it when SPHEREx looked.
-    rows: (data) => {
-      const years = surveyMidYear() - data.epoch;
-      return data.stars.map((s) => {
-        const cosDec = Math.max(1e-6, Math.cos((s.dec * Math.PI) / 180));
-        return [s.ra + ((s.pmra || 0) * years) / 3.6e6 / cosDec, s.dec + ((s.pmdec || 0) * years) / 3.6e6, { name: `Gaia DR3 ${s.id}`, G: s.g }];
-      });
-    },
-    style: { name: "Gaia DR3", color: MARK.gaia, sourceSize: 8, shape: "cross" },
-  },
-};
-
-// Middle of the SPHEREx survey as a decimal year (2025.8 for the first release).
-function surveyMidYear() {
-  const [start, end] = (survey.date_range || []).map((d) => Date.parse(d));
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return 2025.84;
-  return 2000 + ((start + end) / 2 - Date.UTC(2000, 0, 1, 12)) / (365.25 * 86400000);
-}
-
-function removeCatalog(cat) {
-  try { if (cat) aladin.removeOverlay(cat); } catch {}
-}
-
-// `where` = {ra, dec, fov} of the place to query; defaults to the current view.
-async function refreshOverlay(key, where) {
-  const o = OVERLAYS[key];
-  if (!$(o.toggle).checked) return;
-  if (!where) {
-    const [ra, dec] = aladin.getRaDec();
-    where = { ra, dec, fov: aladin.getFov()[0] };
-  }
-  o.request?.abort(); // only the newest place matters
-  if (where.fov > o.maxFov) {
-    // Too far out: take the markers away and come back when the view is zoomed in again.
-    removeCatalog(o.cat);
-    o.cat = o.request = null;
-    o.at = { ra: where.ra, dec: where.dec, radius: where.fov / 2 };
-    return;
-  }
-  const radius = Math.min(o.maxRadius, where.fov / 2);
-  o.at = { ra: where.ra, dec: where.dec, radius };
-  const request = (o.request = new AbortController());
-  try {
-    const r = await fetch(o.url(where.ra.toFixed(5), where.dec.toFixed(5), radius.toFixed(4)), { signal: request.signal });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const rows = o.rows(await r.json());
-    if (o.request !== request) return; // switched off, or a newer query took over
-    // A click on a marker inspects that exact object (see the click handler in wireControls).
-    const cat = A.catalog({ ...o.style, onClick: markerClicked });
-    cat.addSources(rows.map(([ra, dec, data]) => A.source(ra, dec, data)));
-    removeCatalog(o.cat); // the old markers stayed until now, so they don't blink
-    aladin.addCatalog(cat);
-    o.cat = cat;
-  } catch (e) {
-    if (e.name === "AbortError" || o.request !== request) return;
-    toast(`${o.label} couldn't be loaded: the star catalog didn't answer. Switch it off and on to try again.`, 5000);
-  }
-}
-
-function clearOverlay(key) {
-  const o = OVERLAYS[key];
-  o.request?.abort();
-  removeCatalog(o.cat);
-  o.cat = o.at = o.request = null;
-}
-
-// After the view has been still for a moment, re-query overlays that it has moved away from.
-function refreshOverlaysIfMoved() {
-  if (drifting) return;
-  const [ra, dec] = aladin.getRaDec();
-  const fov = aladin.getFov()[0];
-  for (const [key, o] of Object.entries(OVERLAYS)) {
-    if (!$(o.toggle).checked || !o.at) continue;
-    const radius = Math.min(o.maxRadius, fov / 2);
-    const moved = angularDistance(ra, dec, o.at.ra, o.at.dec) > o.at.radius * 0.5;
-    const rescaled = radius > o.at.radius * 1.5 || radius < o.at.radius / 2;
-    const tooWide = fov > o.maxFov && o.cat; // zoomed out past the point where its markers make sense
-    if (moved || rescaled || tooWide) refreshOverlay(key, { ra, dec, fov });
-  }
-}
-
 // ------------------------------------------------------------------ idle drift (slow auto-rotate on the welcome screen)
 function startIdleDrift() {
   if (hasUrlState) return;
@@ -915,19 +823,15 @@ function wireControls() {
 
   $("#cmap").addEventListener("change", (e) => setColormap(e.target.value));
 
-  for (const key in OVERLAYS) {
-    $(OVERLAYS[key].toggle).addEventListener("change", (e) => (e.target.checked ? refreshOverlay(key) : clearOverlay(key)));
-  }
   $("#tg-names").addEventListener("change", (e) => names.setEnabled(e.target.checked));
+  $("#tg-gaia").addEventListener("change", (e) => stars.setEnabled(e.target.checked));
 
   $("#welcome-close").addEventListener("click", () => ($("#welcome").hidden = true));
   $("#info-close").addEventListener("click", () => openInspector(false));
   aladin.on("click", (e) => {
-    const marker = clickedMarker && performance.now() - clickedMarker.at < 300 ? clickedMarker : null;
-    clickedMarker = null;
     if (e.isDragging) return;
-    const named = marker || names.at(e.x, e.y);
-    if (named) inspectAt(named.ra, named.dec, 5); // a name or a Gaia marker: that object, not its neighbour
+    const named = names.at(e.x, e.y) || stars.at(e.x, e.y);
+    if (named) inspectAt(named.ra, named.dec, 5); // a name or a Gaia star's mark: that object, not its neighbour
     else if (Number.isFinite(e.ra) && Number.isFinite(e.dec)) inspectAt(e.ra, e.dec);
   });
   $("#act-zoom").addEventListener("click", () => current && aladin.zoomToFoV(Math.max(0.15, aladin.getFov()[0] / 3), 1.2));
@@ -940,8 +844,6 @@ function wireControls() {
     if (drifting) return;
     syncUrl();
     scheduleNeighbourWarm();
-    clearTimeout(viewTimer);
-    viewTimer = setTimeout(refreshOverlaysIfMoved, 800);
   };
   aladin.on("positionChanged", viewChanged);
   aladin.on("zoomChanged", viewChanged);
@@ -1034,6 +936,10 @@ names = createNames({
   avoid: ".topbar, .viewbar, .rail, .welcome, .inspector, .toast",
   onError: () => toast("Some names couldn't be loaded: the catalog didn't answer. They are retried as you move around.", 5000),
 });
+stars = createStars({
+  api: API, aladin,
+  onError: () => toast("Some Gaia stars couldn't be loaded: the star catalog didn't answer. They are retried as you move around.", 5000),
+});
 watchTiles();
 new ResizeObserver(() => { drawScale(); updateWavelengthUi(); }).observe($("#wl-ticks"));
 drawScale();
@@ -1045,4 +951,4 @@ warmFeatured();
 booted = true;
 
 // Handy for debugging in the browser console.
-window.skyshift = { get aladin() { return aladin; }, get layer() { return sky.shown.hips; }, sky, survey, timelapse, names, setFrame: showFrame, search, inspectAt, tilesInView, tilesAround, healpixTile };
+window.lumasphere = { get aladin() { return aladin; }, get layer() { return sky.shown.hips; }, sky, survey, timelapse, names, stars, setFrame: showFrame, search, inspectAt, tilesInView, tilesAround, healpixTile };

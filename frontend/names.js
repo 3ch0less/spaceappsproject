@@ -1,4 +1,4 @@
-/* SkyShift names: object labels on the map that behave like place names on a street map.
+/* Lumasphere names: object labels on the map that behave like place names on a street map.
  *
  * Zoomed far out only the best-known objects are named, spread over the whole view; every
  * zoom step brings in the next tier, and at the closest zoom everything catalogued is there.
@@ -34,13 +34,13 @@ function cellsInBand(level, band) {
   const h = cellHeight(level);
   return Math.max(1, Math.floor((360 * Math.cos(((-90 + band * h + h / 2) * Math.PI) / 180)) / h + 0.5));
 }
-function cellAt(level, ra, dec) {
+export function cellAt(level, ra, dec) {
   const h = cellHeight(level);
   const band = clamp(Math.floor((dec + 90) / h), 0, 3 * 2 ** level - 1);
   const count = cellsInBand(level, band);
   return `${level}/${band}/${clamp(Math.floor(((((ra % 360) + 360) % 360) / 360) * count), 0, count - 1)}`;
 }
-const levelFor = (fovDeg) => clamp(Math.round(Math.log2((60 * CELLS_ACROSS) / fovDeg)), 0, MAX_LEVEL);
+export const levelFor = (fovDeg) => clamp(Math.round(Math.log2((60 * CELLS_ACROSS) / fovDeg)), 0, MAX_LEVEL);
 
 export function createNames({ api, aladin, target, avoid = "", onError }) {
   const sky = aladin.getParentDiv();
@@ -297,7 +297,7 @@ export function createNames({ api, aladin, target, avoid = "", onError }) {
     state.drawn = key;
     const started = performance.now();
     draw(w, h, covered);
-    state.drawMs = performance.now() - started; // for the curious: window.skyshift.names.state.drawMs
+    state.drawMs = performance.now() - started; // for the curious: window.lumasphere.names.state.drawMs
   }
 
   // ---------------------------------------------------------------- public

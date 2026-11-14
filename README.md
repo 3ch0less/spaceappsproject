@@ -1,4 +1,4 @@
-# SkyShift: the infrared sky from NASA's SPHEREx
+# Lumasphere: the infrared sky from NASA's SPHEREx
 
 NASA Space Apps Challenge 2026, challenge **"Planet X and SPHEREx"**.
 
@@ -62,15 +62,17 @@ frontend/ (plain HTML/CSS/JS, no build step)
   index.html    layout, and the icons (Lucide, inlined as SVG symbols)
   style.css     look & feel, including the phone layout (colours and sizes are the variables at the top)
   fonts/        Archivo, the one typeface, served from here so nothing depends on a font CDN
-  app.js        sky viewer (Aladin Lite v3), search, map clicks, wavelength slider, Gaia overlay, shareable URLs
+  app.js        sky viewer (Aladin Lite v3), search, map clicks, wavelength slider, shareable URLs
   names.js      object names on the map: more of them the closer you zoom, never overlapping
+  stars.js      Gaia stars on the map, on the same zoom grid: the brightest first, never crowded
   timelapse.js  the flipbook, its timeline and the spectrum chart in the side panel
 
 backend/ (Python FastAPI)
   main.py       GET /api/resolve?q=...            name or coords → sky position + facts
                 GET /api/identify?ra=&dec=        what is at this spot (a click on the map)
                 GET /api/names/<level>/<band>/<cell>   best-known named objects in one cell of the name grid ("Names" switch)
-                GET /api/gaia?ra=&dec=&radius=    Gaia DR3 stars nearby ("Gaia stars" switches)
+                GET /api/stars/<level>/<band>/<cell>   brightest Gaia DR3 stars in one cell of the same grid ("Gaia stars" switch)
+                GET /api/gaia?ra=&dec=&radius=    Gaia DR3 stars around a position (the time-lapse's "Gaia stars" switch)
   tiles.py      GET /hips/<version>/<frame>/...   sky tiles, one HiPS per wavelength, cached on disk
                 GET /api/survey                   wavelengths, blank frames, release version
                 GET /api/warm                     "these tiles are needed soon" (look-ahead)
@@ -80,7 +82,7 @@ backend/ (Python FastAPI)
 
 | Piece | Source |
 |---|---|
-| Sky map | IRSA's SPHEREx DR1 all-sky HiPS cube (102 wavelength frames, 0.75–5.0 µm), fetched through `backend/tiles.py`. The upstream URL is `SKYSHIFT_HIPS_URL` (default: IRSA). Wavelengths, blank frames, date range and the release version are all read from its `properties` file, so a new release needs no code change |
+| Sky map | IRSA's SPHEREx DR1 all-sky HiPS cube (102 wavelength frames, 0.75–5.0 µm), fetched through `backend/tiles.py`. The upstream URL is `LUMASPHERE_HIPS_URL` (default: IRSA). Wavelengths, blank frames, date range and the release version are all read from its `properties` file, so a new release needs no code change |
 | Time-lapse images | SPHEREx level-2 exposures. IRSA's image search (SIA) lists the exposures covering a position; the pixels are read from NASA's public cloud copy (`nasa-irsa-spherex` on AWS), with IRSA itself as the fallback |
 | Stars, galaxies, nebulae | CDS Sesame / SIMBAD (also gives distance and proper motion) |
 | Planets, asteroids, comets | NASA JPL Horizons (position today and path during the SPHEREx survey) |
@@ -113,7 +115,7 @@ backend/ (Python FastAPI)
 - **Changing wavelength never blanks the sky.** The new frame's layer is added on top of the current one and the old
   one is removed only once the new tiles are on screen (`swapLayers()` in `app.js`). A switch takes about 0.3 s when
   cached; the sweep runs at about 2 frames per second (Aladin only looks for new tiles every 500 ms).
-- **Caching, three layers deep.** Disk (`backend/.cache/`, capped by `SKYSHIFT_CACHE_GB`, default 5, least recently
+- **Caching, three layers deep.** Disk (`backend/.cache/`, capped by `LUMASPHERE_CACHE_GB`, default 5, least recently
   used tiles deleted first) → browser (tiles are served `immutable`, the release version is part of the URL) →
   GPU (Aladin). A new IRSA release changes the version, so every layer refreshes by itself.
 - **Look-ahead.** When you search, the destination's tiles start downloading while the camera is still flying
@@ -140,17 +142,20 @@ backend/ (Python FastAPI)
   ten cells. Cells are cached in the page, by the browser and in `backend/.cache/names/` (30 days), so panning
   back costs nothing. The three widest levels are cut from one list of the sky's 20,000 best-known objects.
   The first visit to an uncached area takes a few seconds, because SIMBAD needs about a second per cell.
-- **Gaia stars only show when zoomed in** (view narrower than 3°); wider than that they would be a solid blob.
+- **Gaia stars work like the names.** Each cell of the same grid keeps its 24 brightest Gaia DR3 stars, more at the two closest levels (cached in
+  `backend/.cache/stars/` for good: the catalog never changes). A view marks at most about 150 of them, brightest
+  first, and never two within 30 pixels of each other, so the marks stay readable from the whole sky down to a
+  single arcminute. The brightest few of a view get a larger cross.
 - Clicking a name (the text or its marker) or a Gaia marker opens that exact object in the side panel.
 
 ### Settings (environment variables, all optional)
 | Variable | Default | Meaning |
 |---|---|---|
-| `SKYSHIFT_HIPS_URL` | IRSA SPHEREx all-sky cube | Upstream HiPS cube to mirror |
-| `SKYSHIFT_CACHE_DIR` | `backend/.cache` | Where tiles, time-lapses and name cells are kept. Safe to delete at any time |
-| `SKYSHIFT_CACHE_GB` | `5` | Disk budget for the cache |
-| `SKYSHIFT_SPHEREX_COLLECTIONS` | `spherex_dr1,spherex_qr3` | Data releases searched for exposures, most trusted first. Add the next release here when IRSA publishes it |
-| `SKYSHIFT_SPHEREX_CLOUD` | `https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com/` | Cloud copy the exposures are read from |
+| `LUMASPHERE_HIPS_URL` | IRSA SPHEREx all-sky cube | Upstream HiPS cube to mirror |
+| `LUMASPHERE_CACHE_DIR` | `backend/.cache` | Where tiles, time-lapses and name cells are kept. Safe to delete at any time |
+| `LUMASPHERE_CACHE_GB` | `5` | Disk budget for the cache |
+| `LUMASPHERE_SPHEREX_COLLECTIONS` | `spherex_dr1,spherex_qr3` | Data releases searched for exposures, most trusted first. Add the next release here when IRSA publishes it |
+| `LUMASPHERE_SPHEREX_CLOUD` | `https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com/` | Cloud copy the exposures are read from |
 
 ## Test targets (from the challenge)
 Barnard's Star · Epsilon Indi B (`eps Ind B`) · WISE 0855 (`WISE J085510.83-071442.5`) · RW Aurigae · R Draconis.

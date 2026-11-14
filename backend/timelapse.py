@@ -47,15 +47,15 @@ from fastapi.responses import StreamingResponse
 
 import tiles
 
-log = logging.getLogger("skyshift.timelapse")
+log = logging.getLogger("lumasphere.timelapse")
 
 SIA_URL = "https://irsa.ipac.caltech.edu/SIA"
 TAP_URL = "https://irsa.ipac.caltech.edu/TAP/sync"
 # Data releases to search, most trusted first. Add the next release's collection name here
 # (or in the environment) when IRSA publishes it.
-COLLECTIONS = [c.strip() for c in os.environ.get("SKYSHIFT_SPHEREX_COLLECTIONS", "spherex_dr1,spherex_qr3").split(",") if c.strip()]
+COLLECTIONS = [c.strip() for c in os.environ.get("LUMASPHERE_SPHEREX_COLLECTIONS", "spherex_dr1,spherex_qr3").split(",") if c.strip()]
 IRSA_BASE = "https://irsa.ipac.caltech.edu/"
-CLOUD_BASE = os.environ.get("SKYSHIFT_SPHEREX_CLOUD", "https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com/").rstrip("/") + "/"
+CLOUD_BASE = os.environ.get("LUMASPHERE_SPHEREX_CLOUD", "https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com/").rstrip("/") + "/"
 CACHE_DIR = tiles.CACHE_DIR / "timelapse"
 
 NATIVE_ARCSEC = 6.15          # size of a SPHEREx detector pixel on the sky
@@ -85,7 +85,7 @@ async def start() -> None:
     _client = httpx.AsyncClient(
         limits=httpx.Limits(max_connections=DOWNLOADS + 8, max_keepalive_connections=DOWNLOADS + 8, keepalive_expiry=60),
         timeout=httpx.Timeout(40, connect=8),
-        headers={"User-Agent": "SkyShift-timelapse/1.0"},
+        headers={"User-Agent": "Lumasphere-timelapse/1.0"},
         follow_redirects=True,
     )
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
