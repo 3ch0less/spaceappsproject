@@ -12,13 +12,52 @@ Two things in one page:
 
 ## Run it
 
+You need **Python 3.12 or newer** and **Git**. Paste one line, then open **http://localhost:8000**.
+
+**macOS / Linux**
 ```bash
-cd backend
-python -m venv .venv
-.venv\Scripts\activate          # Windows  (macOS/Linux: source .venv/bin/activate)
-pip install -r requirements.txt
-uvicorn main:app --port 8000
+git clone https://github.com/3ch0less/spaceappsproject && cd spaceappsproject/backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/uvicorn main:app --port 8000
 ```
+
+**Windows (PowerShell)**
+```powershell
+git clone https://github.com/3ch0less/spaceappsproject; cd spaceappsproject\backend; py -m venv .venv; .venv\Scripts\pip install -r requirements.txt; .venv\Scripts\uvicorn main:app --port 8000
+```
+
+**Docker (any OS)**
+```bash
+git clone https://github.com/3ch0less/spaceappsproject && cd spaceappsproject && docker build -t lumasphere . && docker run -p 8000:8000 lumasphere
+```
+
+Next time, start it again from `spaceappsproject/backend` with `.venv/bin/uvicorn main:app --port 8000`
+(Windows: `.venv\Scripts\uvicorn main:app --port 8000`). Stop it with Ctrl+C.
+
+### If the one-liner doesn't work: step by step
+
+1. **Check Python and Git.** `python3 --version` (Windows: `py --version`) should say 3.12 or newer, and
+   `git --version` should print a version. If not, install Python from https://www.python.org/downloads/
+   (on Windows, tick **"Add python.exe to PATH"**) and Git from https://git-scm.com/downloads, then open a new terminal.
+2. **Get the code.** `git clone https://github.com/3ch0less/spaceappsproject`, or on GitHub use
+   **Code → Download ZIP** and unzip it.
+3. **Go into the backend folder.** `cd spaceappsproject/backend`
+4. **Make a virtual environment.** `python3 -m venv .venv` (Windows: `py -m venv .venv`)
+5. **Activate it.** `source .venv/bin/activate` (Windows PowerShell: `.venv\Scripts\Activate.ps1`;
+   Command Prompt: `.venv\Scripts\activate.bat`). Your prompt now starts with `(.venv)`.
+6. **Install the libraries.** `pip install -r requirements.txt`
+7. **Start it.** `uvicorn main:app --port 8000`, wait for `Application startup complete`, then open
+   http://localhost:8000.
+
+Common problems:
+- **`python3`/`py` not found:** Python isn't installed or isn't on PATH (step 1). On Windows try `python` instead of `py`.
+- **PowerShell says running scripts is disabled** (step 5): run
+  `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, answer `Y`, and try again. Or skip activating and use
+  `.venv\Scripts\pip` and `.venv\Scripts\uvicorn` directly.
+- **`pip install` fails building numpy or astropy:** your Python is older than 3.12 (or brand new and not yet supported). Use
+  Python 3.12, and run `python -m pip install --upgrade pip` first.
+- **"Address already in use" / port 8000 busy:** start on another port, `uvicorn main:app --port 8001`, and open
+  http://localhost:8001.
+- **The page opens but the sky stays black or searches fail:** the site needs internet access; it loads live data
+  from NASA IRSA, SIMBAD and JPL. The first view of each patch is slow; after that it is cached.
 
 Open http://localhost:8000. The backend also serves the frontend and the sky tiles.
 
